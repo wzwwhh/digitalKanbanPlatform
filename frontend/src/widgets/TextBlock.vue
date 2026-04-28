@@ -1,6 +1,6 @@
 <template>
   <div class="text-block" :style="textStyle">
-    {{ props.content }}
+    {{ widgetProps.content }}
   </div>
 </template>
 
@@ -8,7 +8,8 @@
 import { computed } from 'vue'
 
 const p = defineProps({
-  props: {
+  widget: { type: Object, default: () => ({}) },
+    props: {
     type: Object,
     default: () => ({
       content: '标题文本',
@@ -19,10 +20,13 @@ const p = defineProps({
   }
 })
 
+// 用 widgetProps 避免 props.props 混淆
+const widgetProps = computed(() => p.props || {})
+
 const textStyle = computed(() => ({
-  fontSize: `${p.props.fontSize}px`,
-  textAlign: p.props.align,
-  color: p.props.color || 'var(--text-primary)',
+  fontSize: `${widgetProps.value.fontSize || 24}px`,
+  textAlign: widgetProps.value.align || 'center',
+  color: widgetProps.value.color || 'var(--text-primary)',
 }))
 </script>
 

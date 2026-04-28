@@ -1,19 +1,24 @@
 <template>
-  <div class="kpi-card">
-    <div class="kpi-title">{{ props.title }}</div>
+  <div class="kpi-card" :style="cardStyle">
+    <div class="kpi-title">{{ props.props.title || 'KPI 指标' }}</div>
     <div class="kpi-value-row">
-      <span class="kpi-value">{{ props.value }}</span>
-      <span v-if="props.unit" class="kpi-unit">{{ props.unit }}</span>
+      <span class="kpi-value">{{ displayValue }}</span>
+      <span v-if="props.props.unit" class="kpi-unit">{{ props.props.unit }}</span>
     </div>
-    <div v-if="props.trend && props.trend !== 'flat'" class="kpi-trend" :class="`trend-${props.trend}`">
-      <span class="trend-icon">{{ props.trend === 'up' ? '↑' : '↓' }}</span>
-      <span class="trend-text">{{ props.trend === 'up' ? '上升' : '下降' }}</span>
+    <div v-if="props.props.trend && props.props.trend !== 'flat'" class="kpi-trend" :class="`trend-${props.props.trend}`">
+      <span class="trend-icon">{{ props.props.trend === 'up' ? '↑' : '↓' }}</span>
+      <span class="trend-text">{{ props.props.trend === 'up' ? '上升' : '下降' }}</span>
     </div>
   </div>
 </template>
 
 <script setup>
-defineProps({
+import { computed, ref, onMounted, watch } from 'vue'
+import { fetchWidgetData } from '../services/dataFetcher'
+import { useProjectStore } from '../stores/project'
+
+const props = defineProps({
+  widget: { type: Object, default: () => ({}) },
   props: {
     type: Object,
     default: () => ({
@@ -25,6 +30,44 @@ defineProps({
     })
   }
 })
+
+const projectStore = useProjectStore()
+const liveValue = ref(null)
+
+async function loadData() {
+  if (!props.widget?.dataSource?.sourceId) return
+  const ds = projectStore.currentProject?.dataSources || []
+  const result = await fetchWidgetData(props.widget.dataSource, ds)
+  if (!result) return
+  const mapping = props.widget.dataSource.mapping || {}
+  if (mapping.value) {
+    // KPI 数据通常是单个对象（如 /api/mock/kpi）
+    const raw = result.raw
+    if (raw && !Array.isArray(raw)) {
+      liveValue.value = raw[mapping.value]
+    } else if (result.rows?.length > 0) {
+      liveValue.value = result.rows[0][mapping.value]
+    }
+  }
+}
+
+onMounted(loadData)
+watch(() => props.widget?.dataSource, loadData, { deep: true })
+
+const displayValue = computed(() => {
+  if (liveValue.value !== null && liveValue.value !== undefined) {
+    const v = liveValue.value
+    if (typeof v === 'number') {
+      return v >= 1000 ? v.toLocaleString() : v.toString()
+    }
+    return String(v)
+  }
+  return props.props.value ?? '0'
+})
+
+const cardStyle = computed(() => ({
+  borderColor: props.props.color || 'var(--border-color)',
+}))
 </script>
 
 <style scoped>

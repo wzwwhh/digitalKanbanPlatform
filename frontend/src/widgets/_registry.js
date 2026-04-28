@@ -13,6 +13,7 @@ const widgetDefs = {
     icon: '📊',
     category: '指标',
     defaultSize: { w: 280, h: 160 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: 'KPI 指标' },
       value: { type: 'string', label: '数值', default: '0' },
@@ -27,6 +28,7 @@ const widgetDefs = {
     icon: '📈',
     category: '图表',
     defaultSize: { w: 560, h: 300 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '折线图' },
       smooth: { type: 'boolean', label: '平滑曲线', default: true },
@@ -39,6 +41,7 @@ const widgetDefs = {
     icon: '📊',
     category: '图表',
     defaultSize: { w: 400, h: 300 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '柱状图' },
       stack: { type: 'boolean', label: '堆叠', default: false },
@@ -51,6 +54,7 @@ const widgetDefs = {
     icon: '🍩',
     category: '图表',
     defaultSize: { w: 300, h: 300 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '饼图' },
       donut: { type: 'boolean', label: '环形', default: false },
@@ -63,6 +67,7 @@ const widgetDefs = {
     icon: '📝',
     category: '文本',
     defaultSize: { w: 400, h: 80 },
+    version: 1,
     schema: {
       content: { type: 'string', label: '内容', default: '标题文本' },
       fontSize: { type: 'number', label: '字号', default: 24 },
@@ -70,13 +75,13 @@ const widgetDefs = {
       color: { type: 'color', label: '颜色', default: '' },
     }
   },
-  // ---------- 以下组件后续实现 ----------
   'number-flip': {
     component: () => import('./NumberFlip.vue'),
     label: '数字翻牌',
     icon: '🔢',
     category: '指标',
     defaultSize: { w: 260, h: 140 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '数字翻牌' },
       value: { type: 'number', label: '数值', default: 0 },
@@ -90,6 +95,7 @@ const widgetDefs = {
     icon: '⭕',
     category: '指标',
     defaultSize: { w: 200, h: 200 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '进度' },
       percent: { type: 'number', label: '百分比', default: 75 },
@@ -102,6 +108,7 @@ const widgetDefs = {
     icon: '🎯',
     category: '图表',
     defaultSize: { w: 300, h: 280 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '仪表盘' },
       value: { type: 'number', label: '数值', default: 50 },
@@ -115,6 +122,7 @@ const widgetDefs = {
     icon: '🕸️',
     category: '图表',
     defaultSize: { w: 350, h: 320 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '雷达图' },
     }
@@ -125,10 +133,24 @@ const widgetDefs = {
     icon: '⚬',
     category: '图表',
     defaultSize: { w: 450, h: 320 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '散点图' },
       xName: { type: 'string', label: 'X轴名称', default: '' },
       yName: { type: 'string', label: 'Y轴名称', default: '' },
+    }
+  },
+  map: {
+    component: () => import('./MapChart.vue'),
+    label: '中国地图',
+    icon: '🗺️',
+    category: '图表',
+    defaultSize: { w: 600, h: 500 },
+    version: 1,
+    schema: {
+      title: { type: 'string', label: '标题', default: '全国数据分布' },
+      color: { type: 'color', label: '主题颜色', default: '#00d4ff' },
+      showVisualMap: { type: 'boolean', label: '显示图例', default: true },
     }
   },
   table: {
@@ -137,6 +159,7 @@ const widgetDefs = {
     icon: '📋',
     category: '数据',
     defaultSize: { w: 500, h: 320 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '数据表格' },
       sortable: { type: 'boolean', label: '可排序', default: true },
@@ -148,6 +171,7 @@ const widgetDefs = {
     icon: '🏆',
     category: '数据',
     defaultSize: { w: 360, h: 400 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '排行榜' },
       showBar: { type: 'boolean', label: '显示进度条', default: true },
@@ -160,6 +184,7 @@ const widgetDefs = {
     icon: '🕐',
     category: '装饰',
     defaultSize: { w: 200, h: 100 },
+    version: 1,
     schema: {
       format: { type: 'select', label: '格式', options: ['24h', '12h'], default: '24h' },
       showDate: { type: 'boolean', label: '显示日期', default: true },
@@ -171,6 +196,7 @@ const widgetDefs = {
     icon: '📜',
     category: '文本',
     defaultSize: { w: 600, h: 60 },
+    version: 1,
     schema: {
       text: { type: 'string', label: '内容', default: '滚动字幕内容' },
       speed: { type: 'number', label: '速度', default: 50 },
@@ -182,10 +208,23 @@ const widgetDefs = {
     icon: '🔲',
     category: '装饰',
     defaultSize: { w: 400, h: 300 },
+    version: 1,
     schema: {
       title: { type: 'string', label: '标题', default: '' },
       style: { type: 'select', label: '样式', options: ['tech-1', 'tech-2', 'simple'], default: 'tech-1' },
       glowing: { type: 'boolean', label: '发光效果', default: true },
+    }
+  },
+  'echarts-custom': {
+    component: () => import('./EchartsCustom.vue'),
+    label: '自定义图表',
+    icon: '⚡',
+    category: '图表',
+    defaultSize: { w: 500, h: 350 },
+    version: 1,
+    schema: {
+      title: { type: 'string', label: '标题', default: '' },
+      option: { type: 'textarea', label: 'ECharts Option (JSON)', default: '' },
     }
   },
 }

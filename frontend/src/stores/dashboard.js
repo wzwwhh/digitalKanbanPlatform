@@ -47,10 +47,10 @@ export const useDashboardStore = defineStore('dashboard', () => {
         widget.props = { ...widget.props, ...updates.props }
       }
       if (updates.position) {
-        widget.position = { ...updates.position }
+        widget.position = { ...widget.position, ...updates.position }
       }
       if (updates.size) {
-        widget.size = { ...updates.size }
+        widget.size = { ...widget.size, ...updates.size }
       }
       if (updates.dataSource !== undefined) {
         widget.dataSource = updates.dataSource

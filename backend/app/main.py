@@ -4,7 +4,7 @@ AI 看板平台 - FastAPI 后端入口
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import ai, data, export
+from app.routers import ai, data, export, mock_data
 from app.config import settings
 
 app = FastAPI(
@@ -26,6 +26,7 @@ app.add_middleware(
 app.include_router(ai.router, prefix="/api/ai", tags=["AI"])
 app.include_router(data.router, prefix="/api/data", tags=["数据源"])
 app.include_router(export.router, prefix="/api/export", tags=["导出"])
+app.include_router(mock_data.router, prefix="/api/mock", tags=["模拟数据"])
 
 
 @app.get("/api/health")

@@ -17,6 +17,10 @@ async def probe_api(url: str, method: str = "GET", headers: Optional[dict] = Non
             "structure": "object|array|..."
         }
     """
+    # 处理相对路径（如 /api/mock/sales）→ 转为本地绝对路径
+    if url.startswith('/'):
+        url = f"http://127.0.0.1:8000{url}"
+
     try:
         async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
             if method.upper() == "GET":

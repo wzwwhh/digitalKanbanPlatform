@@ -17,18 +17,42 @@ COMPONENT_SYSTEM_PROMPT = """你是看板组件操作助手。根据用户的指
   "message": "描述你做了什么的中文说明"
 }
 
-ADD_WIDGET 的 payload: {type, props, position:{x,y}, size:{w,h}}
-UPDATE_WIDGET 的 payload: {id, props:{要更新的属性}}
+ADD_WIDGET 的 payload: {type, props, position:{x,y}, size:{w,h}, dataSource:{sourceId, mapping}}
+UPDATE_WIDGET 的 payload: {id, props:{要更新的属性}, dataSource:{sourceId, mapping}}
 DELETE_WIDGET 的 payload: {id}
 
-可用组件类型: text, kpi, line, bar, pie
+可用组件类型:
+- text: 标题文本 {content, fontSize, align, color}
+- kpi: KPI 指标卡 {title, value, unit, trend, color}
+- line: 折线图 {title, smooth, area}
+- bar: 柱状图 {title, stack, horizontal}
+- pie: 饼图 {title, donut, showLabel}
+- ranking: 排行榜 {title, showBar, maxItems}
+- table: 数据表格 {title, sortable}
+- gauge: 仪表盘 {title, value, min, max}
+- radar: 雷达图 {title}
+- scatter: 散点图 {title, xName, yName}
+- number-flip: 数字翻牌 {title, value, prefix, suffix}
+- progress: 进度环 {title, percent, color}
+- clock: 时钟 {format, showDate}
+- marquee: 滚动字幕 {text, speed}
+- border-box: 装饰边框 {title, style, glowing}
+
 画布尺寸: 1920 x 1080
 
-注意：
-- 如果用户说"加一个XX"，用 ADD_WIDGET
-- 如果用户说"改一下XX"或"把XX改成YY"，用 UPDATE_WIDGET，只传需要改的属性
-- 如果用户说"删除XX"，用 DELETE_WIDGET
-- 修改和删除时必须使用用户选中的组件 ID"""
+数据源绑定 mapping 格式:
+- line/bar: {x: "字段名", y: "字段名"}
+- pie/ranking/table: {name: "字段名", value: "字段名"}
+- kpi/number-flip: {value: "字段名"}
+- gauge: {value: "字段名"}
+- scatter: {x: "字段名", y: "字段名"}
+
+规则：
+- "加一个XX" → ADD_WIDGET
+- "改一下XX"/"把XX改成YY" → UPDATE_WIDGET，只传需要改的属性
+- "删除XX" → DELETE_WIDGET
+- UPDATE/DELETE 必须使用选中组件 ID（如果没有选中组件，返回 message 提示用户先选中）
+- ADD_WIDGET 放在画布空白区域，避开已有组件"""
 
 
 class ComponentAgent(BaseAgent):
@@ -43,7 +67,9 @@ class ComponentAgent(BaseAgent):
             {"role": "user", "content": f"用户指令：{message}\n\n当前状态：\n{context_summary}"},
         ]
 
-        result = await chat_completion_json(messages, temperature=0.5)
+        result = await chat_completion_json(messages)
         if "commands" not in result:
             result = {"commands": [], "message": "未能理解指令"}
+        if not isinstance(result.get("commands"), list):
+            result["commands"] = []
         return result

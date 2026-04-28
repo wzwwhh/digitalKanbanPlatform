@@ -5,10 +5,26 @@
     :style="wrapperStyle"
     @mousedown.stop="onMouseDown"
   >
+    <!-- 如果有边框样式，用 BorderBox 包裹 -->
+    <BorderBox 
+      v-if="widget.props.borderStyle && widget.props.borderStyle !== 'none'" 
+      :props="{ style: widget.props.borderStyle, glowing: true }"
+      class="widget-content"
+    >
+      <component
+        :is="widgetComponent"
+        :props="widget.props"
+        :widget="widget"
+        style="width:100%; height:100%;"
+      />
+    </BorderBox>
+
     <!-- 动态渲染组件 -->
     <component
+      v-else
       :is="widgetComponent"
       :props="widget.props"
+      :widget="widget"
       class="widget-content"
     />
 
@@ -25,10 +41,12 @@
 <script setup>
 import { computed, shallowRef, watch } from 'vue'
 import { getWidget } from '../core/registry'
+import BorderBox from './BorderBox.vue'
 
 const props = defineProps({
   widget: { type: Object, required: true },
   selected: { type: Boolean, default: false },
+  scale: { type: Number, default: 1 },
 })
 
 const emit = defineEmits(['select', 'move', 'resize'])
@@ -41,6 +59,8 @@ watch(() => props.widget.type, async (type) => {
   if (def && def.component) {
     const mod = await def.component()
     widgetComponent.value = mod.default
+  } else {
+    widgetComponent.value = null
   }
 }, { immediate: true })
 
@@ -60,15 +80,14 @@ function onMouseDown(e) {
   startX = e.clientX
   startY = e.clientY
   startPos = { ...props.widget.position }
+  const wrapperEl = e.currentTarget
 
   const onMouseMove = (e) => {
-    const dx = e.clientX - startX
-    const dy = e.clientY - startY
-    // 直接移动（视觉反馈）
-    const el = e.target.closest('.widget-wrapper')
-    if (el) {
-      el.style.left = `${startPos.x + dx}px`
-      el.style.top = `${startPos.y + dy}px`
+    const dx = (e.clientX - startX) / props.scale
+    const dy = (e.clientY - startY) / props.scale
+    if (wrapperEl && wrapperEl.classList) {
+      wrapperEl.style.left = `${startPos.x + dx}px`
+      wrapperEl.style.top = `${startPos.y + dy}px`
     }
   }
 
@@ -76,12 +95,12 @@ function onMouseDown(e) {
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
 
-    const dx = e.clientX - startX
-    const dy = e.clientY - startY
+    const dx = (e.clientX - startX) / props.scale
+    const dy = (e.clientY - startY) / props.scale
     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
       emit('move', {
-        x: Math.max(0, startPos.x + dx),
-        y: Math.max(0, startPos.y + dy),
+        x: Math.max(0, Math.round(startPos.x + dx)),
+        y: Math.max(0, Math.round(startPos.y + dy)),
       })
     }
   }
@@ -97,9 +116,11 @@ function onResizeStart(corner, e) {
   const startSize = { ...props.widget.size }
   const startPos = { ...props.widget.position }
 
+  const resizeEl = e.currentTarget.parentElement || e.currentTarget
+
   const onMouseMove = (e) => {
-    const dx = e.clientX - startX
-    const dy = e.clientY - startY
+    const dx = (e.clientX - startX) / props.scale
+    const dy = (e.clientY - startY) / props.scale
     let newW = startSize.w, newH = startSize.h
     let newX = startPos.x, newY = startPos.y
 
@@ -108,12 +129,11 @@ function onResizeStart(corner, e) {
     if (corner.includes('s')) newH = Math.max(60, startSize.h + dy)
     if (corner.includes('n')) { newH = Math.max(60, startSize.h - dy); newY = startPos.y + dy }
 
-    const el = e.target.closest('.widget-wrapper') || document.querySelector('.widget-wrapper.selected')
-    if (el) {
-      el.style.width = `${newW}px`
-      el.style.height = `${newH}px`
-      el.style.left = `${newX}px`
-      el.style.top = `${newY}px`
+    if (resizeEl && resizeEl.classList) {
+      resizeEl.style.width = `${newW}px`
+      resizeEl.style.height = `${newH}px`
+      resizeEl.style.left = `${newX}px`
+      resizeEl.style.top = `${newY}px`
     }
   }
 
@@ -121,14 +141,14 @@ function onResizeStart(corner, e) {
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
 
-    const dx = e.clientX - startX
-    const dy = e.clientY - startY
+    const dx = (e.clientX - startX) / props.scale
+    const dy = (e.clientY - startY) / props.scale
     let newW = startSize.w, newH = startSize.h
 
-    if (corner.includes('e')) newW = Math.max(80, startSize.w + dx)
-    if (corner.includes('w')) newW = Math.max(80, startSize.w - dx)
-    if (corner.includes('s')) newH = Math.max(60, startSize.h + dy)
-    if (corner.includes('n')) newH = Math.max(60, startSize.h - dy)
+    if (corner.includes('e')) newW = Math.max(80, Math.round(startSize.w + dx))
+    if (corner.includes('w')) newW = Math.max(80, Math.round(startSize.w - dx))
+    if (corner.includes('s')) newH = Math.max(60, Math.round(startSize.h + dy))
+    if (corner.includes('n')) newH = Math.max(60, Math.round(startSize.h - dy))
 
     emit('resize', { w: newW, h: newH })
 
@@ -162,7 +182,6 @@ function onResizeStart(corner, e) {
 .widget-content {
   width: 100%;
   height: 100%;
-  pointer-events: none;
   overflow: hidden;
 }
 

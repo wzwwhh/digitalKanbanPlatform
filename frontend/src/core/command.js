@@ -42,9 +42,10 @@ export function createCommand(type, payload, source = 'manual') {
  * 执行 Command
  * @param {object} cmd - Command 对象
  */
-export function executeCommand(cmd) {
+export function executeCommand(cmd, options = {}) {
   const dashboard = useDashboardStore()
   const history = useHistoryStore()
+  const { skipHistory = false } = options
 
   switch (cmd.type) {
     case CommandType.ADD_WIDGET: {
@@ -71,6 +72,9 @@ export function executeCommand(cmd) {
         if (updates.dataSource !== undefined) {
           oldValues.dataSource = widget.dataSource ? { ...widget.dataSource } : null
         }
+        if (updates.type !== undefined) {
+          oldValues.type = widget.type
+        }
         cmd.undo = { type: CommandType.UPDATE_WIDGET, payload: { id, ...oldValues } }
         dashboard.updateWidget(id, updates)
       }
@@ -82,6 +86,7 @@ export function executeCommand(cmd) {
       if (widget) {
         cmd.undo = { type: CommandType.ADD_WIDGET, payload: { ...widget } }
         dashboard.removeWidget(id)
+        dashboard.deselectAll()
       }
       break
     }
@@ -111,7 +116,7 @@ export function executeCommand(cmd) {
     }
     case CommandType.BATCH: {
       const results = cmd.payload.commands.map(subCmd => {
-        executeCommand(subCmd)
+        executeCommand(subCmd, { skipHistory: true })
         return subCmd
       })
       cmd.undo = {
@@ -124,7 +129,9 @@ export function executeCommand(cmd) {
     }
   }
 
-  history.push(cmd)
+  if (!skipHistory) {
+    history.push(cmd)
+  }
 }
 
 /**

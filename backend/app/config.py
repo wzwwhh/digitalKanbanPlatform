@@ -15,7 +15,8 @@ class Settings:
     # Moonshot (Kimi) API
     MOONSHOT_API_KEY: str = os.getenv("MOONSHOT_API_KEY", "")
     MOONSHOT_BASE_URL: str = os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1")
-    MOONSHOT_MODEL: str = os.getenv("MOONSHOT_MODEL", "moonshot-v1-8k")
+    MOONSHOT_MODEL: str = os.getenv("MOONSHOT_MODEL", "kimi-k2.5")
+    MOONSHOT_TEMPERATURE: float = float(os.getenv("MOONSHOT_TEMPERATURE", "1.0"))
 
     # CORS
     CORS_ORIGINS: list = [
