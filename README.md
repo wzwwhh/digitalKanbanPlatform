@@ -51,7 +51,7 @@ digitalKanbanPlatform/
 ├── frontend/                # Vue 3 前端
 │   └── src/
 │       ├── components/      # 核心组件 (AppLayout, AiChat, Workspace...)
-│       ├── pages/           # 页面 (工作台/项目/看板/数据源/问数/设置)
+│       ├── pages/           # 页面 (工作台/项目/看板/数据源/智能问数/设置)
 │       ├── widgets/         # 15 个可视化组件 + 注册中心
 │       ├── stores/          # 6 个 Pinia Store
 │       ├── themes/          # 5 个内置主题

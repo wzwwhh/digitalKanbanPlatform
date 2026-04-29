@@ -17,8 +17,8 @@ COMPONENT_SYSTEM_PROMPT = """你是看板组件操作助手。根据用户的指
   "message": "描述你做了什么的中文说明"
 }
 
-ADD_WIDGET 的 payload: {type, props, position:{x,y}, size:{w,h}, dataSource:{sourceId, mapping}}
-UPDATE_WIDGET 的 payload: {id, props:{要更新的属性}, dataSource:{sourceId, mapping}}
+ADD_WIDGET 的 payload: {type, props, position:{x,y}, size:{w,h}, dataSource:{sourceId, mapping, sql}}
+UPDATE_WIDGET 的 payload: {id, props:{要更新的属性}, dataSource:{sourceId, mapping, sql}}
 DELETE_WIDGET 的 payload: {id}
 
 可用组件类型:
@@ -46,6 +46,15 @@ DELETE_WIDGET 的 payload: {id}
 - kpi/number-flip: {value: "字段名"}
 - gauge: {value: "字段名"}
 - scatter: {x: "字段名", y: "字段名"}
+
+【重要：SQL 推断】
+当绑定的数据源类型是 database 时，必须在 dataSource 中加 sql 字段：
+- line/bar: 按 X 轴字段 GROUP BY + 聚合，如 "SELECT month, SUM(sales) as total FROM orders GROUP BY month ORDER BY month LIMIT 50"
+- pie: GROUP BY + 聚合 + LIMIT 10
+- kpi/number-flip: SELECT 单一聚合值（SUM/COUNT/AVG）
+- ranking: ORDER BY DESC + LIMIT 10
+- table: SELECT 所需字段 LIMIT 50
+- 所有 SQL 必须加 LIMIT，不要 SELECT *
 
 规则：
 - "加一个XX" → ADD_WIDGET

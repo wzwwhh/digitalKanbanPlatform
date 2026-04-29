@@ -33,6 +33,11 @@ const dbProbing = ref(false)
 const fieldAnnotations = ref({})
 const inferring = ref(false)
 
+// Mock 数据源目录
+const mockCatalog = ref([])
+const showMockPanel = ref(false)
+const mockLoading = ref(false)
+
 function closeDrawer() {
   emit('update:visible', false)
   // 重置表单
@@ -109,6 +114,21 @@ async function probeDbTable() {
     dbProbeResult.value = await resp.json()
     if (!dbForm.value.sql) dbForm.value.sql = `SELECT * FROM ${dbForm.value.table}`
     if (!dbForm.value.name) dbForm.value.name = dbForm.value.table
+
+    // 自动填充字段注释
+    if (dbProbeResult.value?.success) {
+      const dbComments = dbProbeResult.value.comments || {}
+      const fields = (dbProbeResult.value.fields || []).map(f => f.name)
+      const sample = dbProbeResult.value.sample || []
+
+      if (Object.keys(dbComments).length > 0) {
+        // MySQL 有 COMMENT：直接用
+        fieldAnnotations.value = { ...dbComments }
+      } else if (fields.length > 0) {
+        // 无注释（SQLite 等）：自动触发 AI 推测
+        aiInferFields(fields, sample)
+      }
+    }
   } catch (e) {
     dbProbeResult.value = { success: false, message: e.message }
   } finally {
@@ -180,6 +200,60 @@ function goToDataSources() {
     router.push({ name: 'datasources', params: { projectId: projectId.value } })
   }
 }
+
+// Mock 数据源一键添加
+async function loadMockCatalog() {
+  if (mockCatalog.value.length > 0) {
+    showMockPanel.value = true
+    return
+  }
+  mockLoading.value = true
+  try {
+    const resp = await fetch('/api/mock/catalog')
+    mockCatalog.value = await resp.json()
+  } catch (e) {
+    console.error('加载 Mock 目录失败', e)
+  } finally {
+    mockLoading.value = false
+    showMockPanel.value = true
+  }
+}
+
+function addMockDataSource(item) {
+  // 检查是否已添加
+  const existing = dataSources.value.find(d => d.url === item.url)
+  if (existing) return
+
+  projectStore.addDataSource({
+    name: item.name,
+    type: 'api',
+    url: item.url,
+    method: item.method,
+    dataPath: item.dataPath,
+    fields: item.fields,
+    fieldAnnotations: item.fieldAnnotations || {},
+    sample: item.sample || [],
+    description: item.description || '',
+    isMock: true,
+    createdAt: new Date().toISOString(),
+  })
+}
+
+function addAllMockDataSources() {
+  let count = 0
+  for (const item of mockCatalog.value) {
+    const existing = dataSources.value.find(d => d.url === item.url)
+    if (!existing) {
+      addMockDataSource(item)
+      count++
+    }
+  }
+  if (count > 0) showMockPanel.value = false
+}
+
+function isMockAdded(item) {
+  return dataSources.value.some(d => d.url === item.url)
+}
 </script>
 
 <template>
@@ -196,7 +270,33 @@ function goToDataSources() {
           <template v-if="!showForm">
             <div class="drawer-actions">
               <button class="btn-add" @click="showForm = true">＋ 添加数据源</button>
-              <button class="btn-link" @click="goToDataSources">全屏管理管理页</button>
+              <button class="btn-link" @click="goToDataSources">全屏管理页</button>
+            </div>
+
+            <!-- Mock 数据源快捷入口 -->
+            <button class="btn-mock" @click="loadMockCatalog" :disabled="mockLoading">
+              {{ mockLoading ? '加载中...' : '📦 使用示例数据源' }}
+            </button>
+
+            <!-- Mock 选择面板 -->
+            <div v-if="showMockPanel && mockCatalog.length > 0" class="mock-panel">
+              <div class="mock-header">
+                <span>选择示例数据源</span>
+                <button class="btn-icon" @click="showMockPanel = false">✕</button>
+              </div>
+              <div v-for="item in mockCatalog" :key="item.url" class="mock-item" :class="{ added: isMockAdded(item) }">
+                <div class="mock-info">
+                  <div class="mock-name">{{ item.icon }} {{ item.name }}</div>
+                  <div class="mock-desc">{{ item.description }}</div>
+                  <div class="mock-fields">
+                    <span v-for="f in item.fields.slice(0, 4)" :key="f" class="drawer-field">{{ item.fieldAnnotations?.[f] ? `${f}(${item.fieldAnnotations[f]})` : f }}</span>
+                    <span v-if="item.fields.length > 4" class="drawer-field-more">+{{ item.fields.length - 4 }}</span>
+                  </div>
+                </div>
+                <button v-if="!isMockAdded(item)" class="btn-add-mock" @click="addMockDataSource(item)">添加</button>
+                <span v-else class="mock-added-tag">✅ 已添加</span>
+              </div>
+              <button class="btn-add-all" @click="addAllMockDataSources">一键全部添加</button>
             </div>
 
             <div v-if="dataSources.length > 0" class="ds-list">
@@ -528,6 +628,86 @@ function goToDataSources() {
 }
 
 .btn-icon.danger:hover { color: #ff4560; }
+
+/* Mock 数据源样式 */
+.btn-mock {
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 16px;
+  background: linear-gradient(135deg, rgba(123, 97, 255, 0.1), rgba(0, 212, 255, 0.1));
+  border: 1px dashed rgba(123, 97, 255, 0.4);
+  border-radius: 8px;
+  color: #7b61ff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-mock:hover {
+  background: linear-gradient(135deg, rgba(123, 97, 255, 0.2), rgba(0, 212, 255, 0.15));
+  border-color: #7b61ff;
+}
+
+.mock-panel {
+  background: var(--bg-secondary, #131837);
+  border: 1px solid var(--border-color, #2a2d45);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+.mock-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+.mock-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.mock-item:hover:not(.added) {
+  border-color: var(--border-color);
+  background: rgba(255,255,255,0.06);
+}
+.mock-item.added {
+  opacity: 0.6;
+}
+.mock-info { flex: 1; min-width: 0; }
+.mock-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+.mock-desc { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+.mock-fields { display: flex; flex-wrap: wrap; gap: 3px; }
+.btn-add-mock {
+  padding: 4px 10px;
+  background: var(--accent, #00d4ff);
+  color: #0a0e1a;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mock-added-tag { font-size: 12px; color: #00e396; flex-shrink: 0; }
+.btn-add-all {
+  width: 100%;
+  padding: 6px;
+  background: linear-gradient(135deg, #7b61ff, #00d4ff);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+}
 
 /* 动画 */
 .drawer-enter-active, .drawer-leave-active { transition: all 0.3s ease; }

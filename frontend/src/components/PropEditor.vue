@@ -135,6 +135,15 @@
             {{ ds.name }} ({{ (ds.fields || []).length }}字段)
           </option>
         </select>
+        <div v-if="inferring" class="infer-status">
+          <span class="infer-spinner">⏳</span> AI 正在推断查询方式...
+        </div>
+      </div>
+
+      <!-- AI 推断的 SQL 预览 -->
+      <div v-if="widget.dataSource?.sql" class="editor-section">
+        <div class="section-label">AI 推断的查询</div>
+        <div class="sql-preview">{{ widget.dataSource.sql }}</div>
       </div>
 
       <!-- 已绑定数据源时显示字段映射 -->
@@ -305,6 +314,7 @@ function onSelectDataSource(sourceId) {
       dataSource: null,
     }))
   } else {
+    // 先绑定数据源
     executeCommand(createCommand(CommandType.UPDATE_WIDGET, {
       id: widget.value.id,
       dataSource: {
@@ -312,6 +322,53 @@ function onSelectDataSource(sourceId) {
         mapping: widget.value.dataSource?.mapping || {},
       },
     }))
+    // 自动调用 AI 推断 SQL 和映射
+    autoInferSql(sourceId)
+  }
+}
+
+const inferring = ref(false)
+
+async function autoInferSql(sourceId) {
+  const ds = dataSources.value.find(d => d.id === sourceId)
+  if (!ds || !widget.value) return
+
+  inferring.value = true
+  try {
+    const resp = await fetch('/api/ai/infer-sql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        widgetType: widget.value.type,
+        dataSource: ds,
+      }),
+    })
+    const result = await resp.json()
+    if (result.success && widget.value) {
+      // 更新组件的 dataSource（包含 AI 推断的 sql 和 mapping）
+      const newDataSource = {
+        sourceId,
+        mapping: result.mapping || widget.value.dataSource?.mapping || {},
+      }
+      if (result.sql) {
+        newDataSource.sql = result.sql
+      }
+      executeCommand(createCommand(CommandType.UPDATE_WIDGET, {
+        id: widget.value.id,
+        dataSource: newDataSource,
+      }))
+      // 如果 AI 推荐了标题且当前没有自定义标题
+      if (result.title && !widget.value.props?.title) {
+        executeCommand(createCommand(CommandType.UPDATE_WIDGET, {
+          id: widget.value.id,
+          props: { title: result.title },
+        }))
+      }
+    }
+  } catch (e) {
+    console.warn('[PropEditor] AI SQL 推断失败:', e)
+  } finally {
+    inferring.value = false
   }
 }
 
@@ -613,5 +670,30 @@ async function deleteWidget() {
   font-size: 32px;
   margin-bottom: 8px;
   opacity: 0.5;
+}
+
+/* SQL 预览 */
+.sql-preview {
+  padding: 6px 8px;
+  background: rgba(0, 212, 255, 0.06);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--text-secondary);
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.infer-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--accent);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 </style>

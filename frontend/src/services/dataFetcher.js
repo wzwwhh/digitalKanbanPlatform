@@ -87,10 +87,20 @@ export async function fetchKpiValue(dataSource, projectDataSources, field) {
 
 /**
  * 从数据库数据源获取数据（通过后端 SQL 查询）
+ * 
+ * SQL 优先级：
+ * 1. dataSource.sql     — AI 推断的组件级查询（如 "SELECT month, SUM(sales) GROUP BY month"）
+ * 2. dataSource.mapping.sql — 手动配置的查询
+ * 3. config.sql          — 数据源级的默认查询
+ * 4. 兜底               — SELECT * FROM table LIMIT 200
  */
 async function fetchDatabaseData(config, dataSource) {
   try {
-    const sql = config.sql || `SELECT * FROM ${config.table}`
+    const sql = dataSource.sql
+      || dataSource.mapping?.sql
+      || config.sql
+      || `SELECT * FROM ${config.table} LIMIT 200`
+
     const resp = await fetch('/api/data/db/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

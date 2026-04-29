@@ -132,7 +132,7 @@ digitalKanbanPlatform/
 │   │   │   ├── DashboardEditorPage.vue # 编辑器入口
 │   │   │   ├── DashboardPreviewPage.vue # 预览 (占位)
 │   │   │   ├── DataSourcePage.vue    #   数据源管理 ✅
-│   │   │   ├── AskPage.vue           #   问数 (占位)
+│   │   │   ├── AskPage.vue           #   智能问数 (占位)
 │   │   │   └── ProjectSettingsPage.vue # 设置 (占位)
 │   │   ├── components/               #   业务组件
 │   │   │   ├── AppLayout.vue         #   编辑器布局

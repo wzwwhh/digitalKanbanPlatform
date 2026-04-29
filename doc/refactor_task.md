@@ -16,7 +16,7 @@
 - `[x]` 创建 pages/DashboardEditorPage.vue（编辑器入口）
 - `[x]` 创建 pages/DashboardPreviewPage.vue（预览占位）
 - `[x]` 创建 pages/DataSourcePage.vue（数据源占位）
-- `[x]` 创建 pages/AskPage.vue（问数占位）
+- `[x]` 创建 pages/AskPage.vue（智能问数占位）
 - `[x]` 创建 pages/ProjectSettingsPage.vue（设置占位）
 - `[x]` App.vue 改为 router-view + 全局样式
 - `[x]` main.js 挂载 router

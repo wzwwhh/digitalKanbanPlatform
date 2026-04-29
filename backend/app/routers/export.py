@@ -546,10 +546,24 @@ async def export_html(request: ExportRequest):
         bindings.append(binding)
 
     # 精简数据源信息（只传 id/url/dataPath）
-    ds_export = [
-        {"id": ds.get("id"), "url": ds.get("url", ""), "dataPath": ds.get("dataPath", "")}
-        for ds in request.dataSources
-    ] if request.dataSources else []
+    # 关键：数据库类型数据源没有 url，需映射到 server.py 的路由路径
+    ds_export = []
+    for ds in (request.dataSources or []):
+        ds_id = ds.get("id", "unknown")
+        safe_name = ds_id.replace("-", "_").replace(" ", "_")
+        if ds.get("type") == "database":
+            # 数据库类型 → 指向 server.py 自动生成的查询路由
+            ds_export.append({
+                "id": ds_id,
+                "url": f"/api/data/{safe_name}",
+                "dataPath": "data",  # server.py 返回 {"data": [...]}
+            })
+        else:
+            ds_export.append({
+                "id": ds_id,
+                "url": ds.get("url", ""),
+                "dataPath": ds.get("dataPath", ""),
+            })
 
     html = EXPORT_HTML_TEMPLATE.format(
         title=request.projectName,
@@ -579,66 +593,334 @@ class ZipExportResponse(BaseModel):
 
 
 def generate_readme(request):
-    """自动生成 README.md"""
-    lines = [f"# {request.projectName}", "", "## 快速启动", "```bash",
-             "pip install -r requirements.txt", "python server.py",
+    """自动生成 README.md（含完整的连接信息和调用代码示例）"""
+    lines = [f"# {request.projectName}", "",
+             "> 本部署包由 AI 看板平台自动导出", "",
+             "## 快速启动", "```bash",
+             "pip install -r requirements.txt",
+             "python server.py",
              "# 打开浏览器访问 http://localhost:8080", "```", "",
-             "## 数据源配置", ""]
+             "## 数据源配置", "",
+             "以下是本看板使用的所有数据源。后续开发人员只需保持相同的字段名和返回格式，即可将 Mock/示例数据替换为真实数据。", ""]
+
     for ds in request.dataSources or []:
         dtype = ds.get("type", "api")
-        lines.append(f"### {ds.get('name', '未命名')} ({dtype.upper()})")
+        ds_name = ds.get("name", "未命名")
+        lines.append(f"### {ds_name} ({dtype.upper()})")
+
         if dtype == "api":
-            lines.append(f"- **URL**: `{ds.get('url', '')}`")
-            lines.append(f"- **方法**: {ds.get('method', 'GET')}")
-            if ds.get("headers"):
-                lines.append(f"- **请求头**: `{json.dumps(ds['headers'], ensure_ascii=False)}`")
+            url = ds.get("url", "")
+            method = ds.get("method", "GET")
+            lines.append(f"- **URL**: `{url}`")
+            lines.append(f"- **方法**: {method}")
             if ds.get("dataPath"):
                 lines.append(f"- **数据路径**: `{ds['dataPath']}`")
+
+            # 字段说明表格
+            fields = ds.get("fields", [])
+            annotations = ds.get("fieldAnnotations", {})
+            if fields:
+                lines.append("")
+                lines.append("| 字段名 | 说明 |")
+                lines.append("|--------|------|")
+                for f in fields:
+                    ann = annotations.get(f, "")
+                    lines.append(f"| `{f}` | {ann} |")
+
+            # 调用代码示例
+            lines.append("")
+            lines.append("#### 调用示例 (JavaScript)")
+            lines.append("```javascript")
+            lines.append(f"const resp = await fetch('{url}')")
+            lines.append("const data = await resp.json()")
+            dp = ds.get("dataPath")
+            if dp:
+                lines.append(f"const rows = data.{dp}  // Array<{{ {', '.join(fields[:4])} }}> ")
+            else:
+                lines.append(f"// data → {{ {', '.join(fields[:4])} }}")
+            lines.append("```")
+
+            lines.append("")
+            lines.append("#### 调用示例 (Python)")
+            lines.append("```python")
+            lines.append("import requests")
+            lines.append(f'resp = requests.{method.lower()}("{url}")')
+            lines.append("data = resp.json()")
+            if dp:
+                lines.append(f'rows = data["{dp}"]')
+            lines.append("```")
+
         else:
-            lines.append(f"- **数据库**: {ds.get('dbType', 'SQLite')}")
+            # 数据库类型
+            db_type = ds.get("dbType", "sqlite")
+            lines.append(f"- **数据库类型**: {db_type.upper()}")
+            if db_type == "mysql":
+                lines.append(f"- **主机**: `{ds.get('host', 'localhost')}:{ds.get('port', 3306)}`")
+                lines.append(f"- **数据库**: `{ds.get('database', '')}`")
+                lines.append(f"- **用户**: `{ds.get('user', 'root')}`")
+            else:
+                lines.append(f"- **数据库文件**: `{ds.get('dbPath', 'sample_data.db')}`")
             lines.append(f"- **表**: `{ds.get('table', '')}`")
-        if ds.get("description"):
-            lines.append(f"- **说明**: {ds['description']}")
-        fields = ds.get("fields", [])
-        annotations = ds.get("fieldAnnotations", {})
-        if fields:
-            noted = [f"`{f}`({annotations[f]})" for f in fields if annotations.get(f)]
-            lines.append(f"- **字段**: {', '.join(noted) if noted else ', '.join(fields)}")
+            if ds.get("sql"):
+                lines.append(f"- **查询SQL**: `{ds.get('sql')}`")
+
+            fields = ds.get("fields", [])
+            annotations = ds.get("fieldAnnotations", {})
+            if fields:
+                lines.append("")
+                lines.append("| 字段名 | 说明 |")
+                lines.append("|--------|------|")
+                for f in fields:
+                    ann = annotations.get(f, "")
+                    lines.append(f"| `{f}` | {ann} |")
+
+            # 连接代码示例
+            lines.append("")
+            if db_type == "mysql":
+                lines.append("#### 连接示例 (Python)")
+                lines.append("```python")
+                lines.append("import pymysql")
+                lines.append(f"conn = pymysql.connect(")
+                lines.append(f"    host='{ds.get('host', 'localhost')}',")
+                lines.append(f"    port={ds.get('port', 3306)},")
+                lines.append(f"    user='{ds.get('user', 'root')}',")
+                lines.append(f"    password='YOUR_PASSWORD',  # TODO: 填入真实密码")
+                lines.append(f"    database='{ds.get('database', '')}',")
+                lines.append(f"    charset='utf8mb4',")
+                lines.append(f"    cursorclass=pymysql.cursors.DictCursor")
+                lines.append(f")")
+                lines.append(f'cursor = conn.cursor()')
+                sql = ds.get("sql", f"SELECT * FROM {ds.get('table', '?')} LIMIT 10")
+                lines.append(f'cursor.execute("{sql}")')
+                lines.append(f'rows = cursor.fetchall()')
+                lines.append("```")
+            else:
+                lines.append("#### 连接示例 (Python)")
+                lines.append("```python")
+                lines.append("import sqlite3")
+                lines.append(f"conn = sqlite3.connect('{ds.get('dbPath', 'sample_data.db')}')")
+                lines.append("conn.row_factory = sqlite3.Row")
+                sql = ds.get("sql", f"SELECT * FROM {ds.get('table', '?')} LIMIT 10")
+                lines.append(f'rows = [dict(r) for r in conn.execute("{sql}").fetchall()]')
+                lines.append("```")
+
+        # 样本数据
+        sample = ds.get("sample", [])
+        if sample:
+            lines.append("")
+            lines.append("#### 样本数据")
+            lines.append("```json")
+            lines.append(json.dumps(sample[:2], ensure_ascii=False, indent=2))
+            lines.append("```")
+
         lines.append("")
+
     lines += ["## 组件列表", ""]
     for w in request.widgets:
         p = w.get("props", {})
         title = p.get("title") or p.get("content") or w.get("type", "")
-        lines.append(f"- **{title}** ({w.get('type', '?')})")
+        ds_info = ""
+        if w.get("dataSource", {}).get("sourceId"):
+            ds_info = f" → 数据源 `{w['dataSource']['sourceId']}`"
+        lines.append(f"- **{title}** ({w.get('type', '?')}){ds_info}")
     return "\n".join(lines)
+
+
+def generate_server_py(request):
+    """
+    生成完整可运行的 FastAPI 部署服务端。
+    
+    - 为 API 类型数据源生成代理路由（解决跨域）
+    - 为数据库类型数据源生成查询路由
+    - 静态文件托管（index.html）
+    """
+    api_sources = []
+    db_sources = []
+    for ds in request.dataSources or []:
+        if ds.get("type") == "database":
+            db_sources.append(ds)
+        else:
+            api_sources.append(ds)
+
+    # 构建路由代码
+    route_blocks = []
+    
+    for ds in api_sources:
+        url = ds.get("url", "")
+        ds_id = ds.get("id", "unknown")
+        safe_name = ds_id.replace("-", "_").replace(" ", "_")
+        method = ds.get("method", "GET").lower()
+        route_blocks.append(f'''
+@app.get("/api/data/{safe_name}")
+async def data_{safe_name}():
+    """数据代理: {ds.get('name', '')} → {url}"""
+    try:
+        resp = httpx.{method}("{url}", timeout=15)
+        return resp.json()
+    except Exception as e:
+        return {{"error": str(e)}}
+''')
+    
+    for ds in db_sources:
+        ds_id = ds.get("id", "unknown")
+        safe_name = ds_id.replace("-", "_").replace(" ", "_")
+        db_type = ds.get("dbType", "sqlite")
+        table = ds.get("table", "")
+        sql = ds.get("sql", f"SELECT * FROM {table}")
+        
+        if db_type == "mysql":
+            route_blocks.append(f'''
+@app.get("/api/data/{safe_name}")
+async def data_{safe_name}():
+    """数据库查询: {ds.get('name', '')} → {table}"""
+    import pymysql
+    try:
+        conn = pymysql.connect(
+            host="{ds.get('host', 'localhost')}",
+            port={ds.get('port', 3306)},
+            user="{ds.get('user', 'root')}",
+            password=DB_PASSWORDS.get("{ds_id}", "YOUR_PASSWORD"),
+            database="{ds.get('database', '')}",
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+        with conn.cursor() as cur:
+            cur.execute("""{sql}""")
+            rows = cur.fetchall()
+        conn.close()
+        return {{"data": rows, "total": len(rows)}}
+    except Exception as e:
+        return {{"error": str(e)}}
+''')
+        else:
+            route_blocks.append(f'''
+@app.get("/api/data/{safe_name}")
+async def data_{safe_name}():
+    """数据库查询: {ds.get('name', '')} → {table}"""
+    import sqlite3, os
+    db_path = os.path.join(os.path.dirname(__file__), "{ds.get('dbPath', 'sample_data.db')}")
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute("""{sql}""").fetchall()]
+        conn.close()
+        return {{"data": rows, "total": len(rows)}}
+    except Exception as e:
+        return {{"error": str(e)}}
+''')
+
+    routes_code = "\n".join(route_blocks)
+    
+    # 密码占位
+    db_passwords = {}
+    for ds in db_sources:
+        if ds.get("dbType") == "mysql":
+            db_passwords[ds.get("id", "")] = "YOUR_PASSWORD"
+    passwords_code = json.dumps(db_passwords, ensure_ascii=False, indent=4)
+
+    return f'''"""
+{request.projectName} — 部署服务器
+由 AI 看板平台自动生成
+
+启动方式:
+  pip install -r requirements.txt
+  python server.py
+  浏览器访问 http://localhost:8080
+"""
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import httpx
+import os
+
+app = FastAPI(title="{request.projectName}")
+
+# ===== 数据库密码配置（TODO: 填入真实密码）=====
+DB_PASSWORDS = {passwords_code}
+
+# ===== 数据路由（自动生成）=====
+{routes_code}
+
+# ===== 静态文件托管 =====
+@app.get("/")
+async def index():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
+
+if __name__ == "__main__":
+    import uvicorn
+    print("=" * 50)
+    print("  {request.projectName}")
+    print("  看板地址: http://localhost:8080")
+    print("=" * 50)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+'''
+
+
+def generate_datasource_spec(request):
+    """生成机器可读的数据源规格说明文件"""
+    spec = {
+        "projectName": request.projectName,
+        "generatedAt": __import__("datetime").datetime.now().isoformat(),
+        "dataSources": [],
+    }
+    for ds in request.dataSources or []:
+        ds_spec = {
+            "id": ds.get("id"),
+            "name": ds.get("name"),
+            "type": ds.get("type", "api"),
+            "fields": ds.get("fields", []),
+            "fieldAnnotations": ds.get("fieldAnnotations", {}),
+            "sample": ds.get("sample", [])[:3],
+        }
+        if ds.get("type") == "api":
+            ds_spec["connection"] = {
+                "url": ds.get("url", ""),
+                "method": ds.get("method", "GET"),
+                "dataPath": ds.get("dataPath", ""),
+            }
+        else:
+            ds_spec["connection"] = {
+                "dbType": ds.get("dbType", "sqlite"),
+                "host": ds.get("host", ""),
+                "port": ds.get("port", ""),
+                "database": ds.get("database", ""),
+                "table": ds.get("table", ""),
+                "sql": ds.get("sql", ""),
+            }
+        spec["dataSources"].append(ds_spec)
+    return json.dumps(spec, ensure_ascii=False, indent=2)
 
 
 @router.post("/zip")
 async def export_zip(request: ExportRequest):
-    """导出为 ZIP 部署包"""
+    """导出为 ZIP 部署包（含完整可运行服务端）"""
     html_resp = await export_html(request)
 
     readme = generate_readme(request)
-    ds_cfg = [{"id": d.get("id"), "url": d.get("url", ""), "type": d.get("type", "api")} for d in (request.dataSources or [])]
-    config = json.dumps({"dataSources": ds_cfg, "refreshInterval": 30}, ensure_ascii=False, indent=2)
-
-    server_py = '''"""轻量部署服务器"""
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-PORT = 8080
-if __name__ == "__main__":
-    print(f"  看板服务: http://localhost:{PORT}")
-    HTTPServer(("", PORT), SimpleHTTPRequestHandler).serve_forever()
-'''
+    server_py = generate_server_py(request)
+    ds_spec = generate_datasource_spec(request)
+    
+    # requirements.txt
+    has_mysql = any(d.get("dbType") == "mysql" for d in (request.dataSources or []) if d.get("type") == "database")
+    has_api_proxy = any(d.get("type") != "database" for d in (request.dataSources or []))
+    
+    deps = ["fastapi>=0.100.0", "uvicorn>=0.20.0"]
+    if has_api_proxy:
+        deps.append("httpx>=0.24.0")
+    if has_mysql:
+        deps.append("pymysql>=1.1.0")
+    requirements = "\n".join(deps) + "\n"
 
     buf = io.BytesIO()
     proj = request.projectName.replace(" ", "_")
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{proj}/index.html", html_resp.html)
         zf.writestr(f"{proj}/server.py", server_py)
-        zf.writestr(f"{proj}/requirements.txt", "# Python 3 内置，无额外依赖\n")
+        zf.writestr(f"{proj}/requirements.txt", requirements)
         zf.writestr(f"{proj}/README.md", readme)
-        zf.writestr(f"{proj}/config.json", config)
+        zf.writestr(f"{proj}/data_source_spec.json", ds_spec)
 
     buf.seek(0)
     return ZipExportResponse(zipBase64=base64.b64encode(buf.read()).decode(), filename=f"{proj}.zip")
+
 

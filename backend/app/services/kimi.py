@@ -102,3 +102,31 @@ async def chat_completion_json(messages: list) -> dict:
 
     print(f"[Kimi] 所有 JSON 解析尝试均失败，原始响应:\n{content}")
     raise ValueError(f"无法解析 JSON 响应 (前100字符): {content[:100]}")
+
+
+async def chat_completion_stream(messages: list):
+    """
+    流式调用 Kimi 模型，逐 token yield
+
+    用于智能问数等需要渐进显示的场景。
+    """
+    client = get_client()
+
+    if not settings.MOONSHOT_API_KEY:
+        raise RuntimeError("未配置 MOONSHOT_API_KEY")
+
+    try:
+        print(f"[Kimi] 流式调用 {settings.MOONSHOT_MODEL}")
+        stream = await client.chat.completions.create(
+            model=settings.MOONSHOT_MODEL,
+            messages=messages,
+            temperature=settings.MOONSHOT_TEMPERATURE,
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+    except Exception as e:
+        print(f"[Kimi] 流式调用失败: {e}")
+        raise RuntimeError(f"Kimi 流式调用失败: {str(e)}")

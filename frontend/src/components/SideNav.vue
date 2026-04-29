@@ -23,7 +23,7 @@ const projectMenus = computed(() => {
     { key: 'dashboards', icon: '📊', label: '看板', badge: dbCount || null, to: { name: 'dashboards', params: { projectId: props.projectId } } },
     { key: 'datasources', icon: '🔗', label: '数据源', badge: dsCount || null, to: { name: 'datasources', params: { projectId: props.projectId } } },
     { key: 'materials', icon: '🧩', label: '素材库', to: { name: 'materials', params: { projectId: props.projectId } } },
-    { key: 'ask', icon: '🤖', label: '问数', to: { name: 'ask', params: { projectId: props.projectId } } },
+    { key: 'ask', icon: '🤖', label: '智能问数', to: { name: 'ask', params: { projectId: props.projectId } } },
     { key: 'settings', icon: '⚙️', label: '设置', to: { name: 'settings', params: { projectId: props.projectId } } },
   ]
 })

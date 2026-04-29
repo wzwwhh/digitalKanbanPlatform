@@ -59,7 +59,7 @@
 - ✅ 项目列表：卡片显示看板/数据源数量
 - ✅ 看板列表：卡片显示组件数 + 新建对话框
 - ✅ 编辑器：← 返回按钮 + 看板名称 + 全屏编辑
-- ✅ 占位页面：数据源/问数/设置 均正确显示
+- ✅ 占位页面：数据源/智能问数/设置 均正确显示
 - ✅ 数据持久化：保存→返回→重新打开，widgets 完整保留
 - ✅ 路由导航：侧边栏菜单切换流畅，高亮正确
 
@@ -82,7 +82,7 @@ frontend/src/
 │   ├── DashboardEditorPage.vue # 编辑器入口
 │   ├── DashboardPreviewPage.vue # 预览（占位）
 │   ├── DataSourcePage.vue     # 数据源（占位）
-│   ├── AskPage.vue            # 问数（占位）
+│   ├── AskPage.vue            # 智能问数（占位）
 │   └── ProjectSettingsPage.vue # 设置（占位）
 ├── components/
 │   ├── AppLayout.vue          # 编辑器布局（Phase 3 改为 EditorLayout）

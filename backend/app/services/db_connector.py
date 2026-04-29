@@ -59,9 +59,10 @@ def list_tables(db_path: Optional[str] = None, db_type: str = "sqlite", **kwargs
 
 
 def probe_table(table_name: str, db_path: Optional[str] = None, db_type: str = "sqlite", **kwargs) -> dict:
-    """探测表结构 + 样本数据"""
+    """探测表结构 + 样本数据 + 字段注释"""
     conn = _get_conn(db_path, db_type, **kwargs)
     try:
+        comments = {}
         if db_type == "mysql":
             with conn.cursor() as cur:
                 cur.execute(f"DESCRIBE `{table_name}`")
@@ -71,6 +72,17 @@ def probe_table(table_name: str, db_path: Optional[str] = None, db_type: str = "
                 row_count = cur.fetchone()["cnt"]
                 cur.execute(f"SELECT * FROM `{table_name}` LIMIT 5")
                 sample = [dict(row) for row in cur.fetchall()]
+                # 读取字段注释 (COLUMN_COMMENT)
+                database_name = kwargs.get("database", "")
+                if database_name:
+                    cur.execute(
+                        "SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                        (database_name, table_name)
+                    )
+                    for row in cur.fetchall():
+                        if row.get("COLUMN_COMMENT"):
+                            comments[row["COLUMN_NAME"]] = row["COLUMN_COMMENT"]
         else:
             cur = conn.execute(f"PRAGMA table_info({table_name})")
             columns = cur.fetchall()
@@ -82,7 +94,7 @@ def probe_table(table_name: str, db_path: Optional[str] = None, db_type: str = "
             cur = conn.execute(f"SELECT * FROM {table_name} LIMIT 5")
             sample = [dict(row) for row in cur.fetchall()]
 
-        return {"table": table_name, "fields": fields, "sample": sample, "rowCount": row_count}
+        return {"table": table_name, "fields": fields, "sample": sample, "rowCount": row_count, "comments": comments}
     finally:
         conn.close()
 

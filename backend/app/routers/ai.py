@@ -8,7 +8,11 @@ Level 3: Agent 调用（Kimi token）
 所有 AI 常量配置集中在 app/ai_config.py
 """
 import re
+import json
+import asyncio
+import httpx
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -736,107 +740,547 @@ async def ai_chat(request: ChatRequest):
         )
 
 
-# ========== 智能问数 ==========
+# ========== SQL 推断端点（供前端绑定数据源 / AI 生成看板时调用）==========
+
+
+class InferSqlRequest(BaseModel):
+    widgetType: str
+    dataSource: dict
+    userIntent: Optional[str] = ""
+
+
+@router.post("/infer-sql")
+async def api_infer_sql(req: InferSqlRequest):
+    """
+    AI 推断组件最佳查询 SQL + 字段映射。
+    
+    调用场景：
+    - 前端 PropEditor 绑定数据源后自动推断
+    - AI 生成看板时为每个图表推断
+    - 智能问数一键入板时
+    """
+    result = await infer_widget_sql(req.widgetType, req.dataSource, req.userIntent)
+    return {"success": True, **result}
+
+
+# ========== 智能问数（SSE 流式） ==========
+
 
 class AskRequest(BaseModel):
     question: str
-    dataSource: Optional[dict] = None
     allDataSources: Optional[list] = None
     projectId: Optional[str] = None
 
 
-class AskResponse(BaseModel):
-    answer: str = ""
-    chartSuggestion: Optional[str] = None
-    widgetConfig: Optional[dict] = None
-
-# 关键词 → 图表类型映射（定义在 ai_config.py 中的 CHART_SUGGESTIONS）
+def sse_event(event_type: str, data: dict) -> str:
+    """构建 SSE 事件字符串"""
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-@router.post("/ask", response_model=AskResponse)
-async def ask_data(request: AskRequest):
-    """智能问数 — 调用大模型，基于问题分析推荐图表并给出洞察"""
-    from app.services.kimi import chat_completion_json
-    q = request.question.strip()
-    ds = request.dataSource
-    all_ds = request.allDataSources
+def build_ds_metadata(all_ds: list) -> str:
+    """构建紧凑的数据源元信息（仅字段名/类型/注释/样本，不含数据）"""
+    parts = []
+    for ds in all_ds:
+        fields_info = []
+        annotations = ds.get("fieldAnnotations") or {}
+        for f in (ds.get("fields") or [])[:20]:
+            ann = annotations.get(f, "")
+            fields_info.append(f"{f}({ann})" if ann else f)
 
-    # 构建上下文
-    ds_context = ""
-    if ds:
-        fields = ds.get("fields") or []
-        field_str = "、".join(fields) if fields else "未知"
-        ds_name = ds.get("name", "未命名")
-        ds_id = ds.get("id", "ds_unknown")
-        ds_context = f"用户明确指定了数据源「{ds_name}」(ID: {ds_id})，该数据源包含以下可用的数据字段：{field_str}"
-    elif all_ds:
-        ds_list_str = ""
-        for d in all_ds:
-            fields = d.get("fields") or []
-            field_str = "、".join(fields[:15])
-            ds_list_str += f"- 数据源「{d.get('name')}」 (ID: {d.get('id')}) 包含字段: {field_str}\n"
-        ds_context = f"用户未指定具体数据源。系统中有以下可用的数据源：\n{ds_list_str}\n你需要根据用户的问题，在上述数据源中挑选最合适的一个，并在回答中明确指出建议使用哪个数据源。"
-    else:
-        ds_context = "用户未选择具体数据源，且当前系统中无可用数据源。"
+        info = f"[{ds.get('id')}] {ds.get('name','未命名')}"
+        ds_type = ds.get("type", "api")
+        info += f"  类型: {ds_type}"
+        if ds_type == "database":
+            info += f" | 表: {ds.get('table','?')}"
+        info += f"\n  字段: {', '.join(fields_info)}"
+        sample = ds.get("sample", [])[:2]
+        if sample:
+            info += f"\n  样本: {json.dumps(sample, ensure_ascii=False)[:300]}"
+        parts.append(info)
+    return "\n\n".join(parts)
 
-    prompt = f"""
-当前状态：
-{ds_context}
 
-用户提问："{q}"
+async def infer_widget_sql(widget_type: str, ds: dict, user_intent: str = "") -> dict:
+    """
+    通用 SQL 推断能力 —— 任何 AI 场景只要涉及"组件 + 数据源"都调用此函数。
+    
+    根据组件类型、数据源字段/注释/样本，AI 自动推断出：
+    - sql: 合适的查询语句（聚合/筛选/排序）
+    - mapping: 字段映射（x/y/name/value 等）
+    
+    使用场景：
+    1. SceneAgent 生成看板时：为每个图表推断 SQL
+    2. ComponentAgent 添加组件时：为新组件推断 SQL
+    3. 智能问数一键入板时：widgetConfig 携带推断的 SQL
+    4. PropEditor 手动绑定数据源时：自动推荐 SQL
+    """
+    annotations = ds.get("fieldAnnotations") or {}
+    fields_desc = []
+    for f in (ds.get("fields") or [])[:20]:
+        ann = annotations.get(f, "")
+        fields_desc.append(f"{f}({ann})" if ann else f)
+    
+    sample = ds.get("sample", [])[:3]
+    ds_type = ds.get("type", "api")
+    table = ds.get("table", "")
+    
+    prompt = f"""根据组件类型和数据源信息，推断最佳的查询方式。
 
-请你扮演一位资深的BI数据分析师，分析用户的问题。
-1. 如果用户未指定数据源，请务必在回答开头明确指出你推荐使用哪个数据源来分析此问题，并解释原因。
-2. 如果用户询问的是趋势、占比、对比等分析场景，请推荐最合适的图表类型标识（如 'line', 'bar', 'pie', 'table', 'number-flip' 等），不需要推荐时返回 null。
-3. 你的回答（answer）需要非常专业：解释你为什么要生成这个图表，并总结数据分析的思路。
-4. 【重要】为了实现“一键生成答案”，如果能匹配到数据源和图表，你必须返回一个 `widgetConfig` 对象，包含具体的图表配置。配置规范如下：
-"widgetConfig": {{
-    "type": "图表类型标识 (line/bar/pie/table/number-flip 等)",
-    "props": {{ "title": "推荐的图表标题" }},
-    "dataSource": {{
-        "sourceId": "选中的数据源的 ID",
-        "mapping": {{
-            "x": "用作 X 轴/分类维度的字段名",
-            "y": "用作 Y 轴/数值的字段名",
-            "dimension": "饼图等用作分类的字段名",
-            "measure": "数值字段名"
-        }}
-    }}
-}}
+组件类型: {widget_type}
+用户意图: {user_intent or '（未指定，请根据组件类型和数据特征自动判断）'}
 
-请严格返回如下 JSON 格式：
+数据源: {ds.get('name', '未命名')} (类型: {ds_type})
+{"表: " + table if table else ""}
+字段: {', '.join(fields_desc)}
+样本: {json.dumps(sample, ensure_ascii=False)[:400] if sample else '无'}
+
+请返回 JSON:
 {{
-    "answer": "你给用户的专业详细指导（支持 Markdown 格式，语气专业且热情）",
-    "chartSuggestion": "line 或 bar 或 pie 或 null",
-    "widgetConfig": {{ ... }} // 可选，只有当推荐了图表且确定数据源映射时提供
+  "sql": "SELECT语句（仅database类型需要，api类型留空）",
+  "mapping": {{"字段映射"}},
+  "title": "建议的组件标题（中文）"
 }}
-"""
+
+SQL 推断逻辑：
+- line(折线图): 需要时间/类别字段做X轴，数值字段做Y轴，通常需 GROUP BY + SUM/AVG + ORDER BY
+- bar(柱状图): 类似折线图，按分类聚合
+- pie(饼图): 需要 GROUP BY 分类 + SUM/COUNT，通常 LIMIT 10
+- kpi(指标卡): SELECT SUM/COUNT/AVG 单一聚合值
+- number-flip(翻牌器): 同 kpi
+- gauge(仪表盘): SELECT 单一百分比/比率值
+- ranking(排行榜): SELECT 名称,数值 ORDER BY 数值 DESC LIMIT 10
+- table(数据表): SELECT 所需字段 LIMIT 50
+- scatter(散点): 两个数值字段
+
+mapping 格式：
+- line/bar: {{"x": "X轴字段名", "y": "Y轴字段名"}}
+- pie/ranking: {{"name": "名称字段", "value": "数值字段"}}
+- kpi/number-flip/gauge: {{"value": "数值字段"}}
+- table: {{"name": "名称字段", "value": "数值字段"}}
+- scatter: {{"x": "X字段", "y": "Y字段"}}
+
+规则：
+- SQL 只允许 SELECT，必须加 LIMIT（最大 200）
+- SQL 应精准，不要 SELECT *（除非 table 组件）
+- api 类型的 sql 填空字符串
+- title 要有业务含义（如"月度销售趋势"而非"折线图"）"""
 
     try:
-        print(f"[智能问数] 开始调用大模型，问题：{q}")
         result = await chat_completion_json([
-            {"role": "system", "content": "你是一个专业的数据看板分析助手。"},
+            {"role": "system", "content": "你是SQL推断专家，只返回紧凑JSON。"},
             {"role": "user", "content": prompt}
         ])
-        
-        answer = result.get("answer", "抱歉，分析时出现了一些逻辑错误。")
-        suggested = result.get("chartSuggestion")
-        widget_config = result.get("widgetConfig")
-        
-        # 清洗图表类型
-        valid_charts = ["line", "bar", "pie", "table", "number-flip", "progress", "radar", "scatter", "map", "kpi"]
-        if suggested and suggested not in valid_charts:
-            suggested = None
-            
-        print(f"[智能问数] 大模型回复完成。推荐图表: {suggested}")
-        return AskResponse(
-            answer=answer,
-            chartSuggestion=suggested,
-            widgetConfig=widget_config
-        )
+        # 确保返回格式
+        return {
+            "sql": result.get("sql", ""),
+            "mapping": result.get("mapping", {}),
+            "title": result.get("title", ""),
+        }
     except Exception as e:
-        print(f"[智能问数] 大模型调用失败: {e}")
-        return AskResponse(
-            answer=f"抱歉，AI 大脑暂时走神了 ({str(e)})，请稍后再试。",
-            chartSuggestion=None
-        )
+        print(f"[SQL推断] 失败: {e}")
+        return {"sql": "", "mapping": {}, "title": ""}
+
+
+async def generate_query_plan(question: str, ds_metadata: str) -> dict:
+    """
+    Phase 1: AI 生成查询方案（JSON 模式，紧凑 prompt）
+    
+    输入：问题 + 数据源元信息
+    输出：选哪些数据源 + SQL/筛选条件 + 图表类型
+    """
+    prompt = f"""你是数据查询规划器。根据用户问题，选择合适的数据源并生成精准查询方案。
+
+可用数据源：
+{ds_metadata}
+
+用户问题："{question}"
+
+返回 JSON：
+{{
+  "queries": [
+    {{
+      "dsId": "数据源ID",
+      "dsName": "数据源名称",
+      "description": "查询目的（10字内）",
+      "sql": "SELECT语句（见规则）",
+      "apiFilter": null
+    }}
+  ],
+  "chartType": "line|bar|pie|table|kpi|gauge|radar|none",
+  "chartTitle": "图表标题"
+}}
+
+【SQL 生成规则（严格遵守）】
+- database 类型必须生成 SQL
+- 必须加 WHERE 条件（如问题涉及筛选）
+- 必须加 GROUP BY + 聚合函数（如问题问总量/均值/对比）
+- 必须加 ORDER BY（如问题问排名/最高/最低）
+- 【强制】必须加 LIMIT，最大值 200（例：LIMIT 50, LIMIT 200）
+- 不能 SELECT *（除非必要），应只选所需字段
+- 只允许 SELECT，不能有 INSERT/UPDATE/DELETE/DROP
+- api 类型：sql 留空，如需过滤填 apiFilter（如 {{"field":"category","value":"手机"}}）
+- 可选多个数据源
+- 简洁，不要废话"""
+
+    return await chat_completion_json([
+        {"role": "system", "content": "你是SQL查询生成器，只返回紧凑JSON，不要多余文字。"},
+        {"role": "user", "content": prompt}
+    ])
+
+
+async def fetch_api_data(ds: dict) -> list:
+    """获取 API 类型数据源的数据"""
+    url = ds.get("url", "")
+    if not url:
+        return []
+    if url.startswith('/'):
+        url = f"http://127.0.0.1:8000{url}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            resp = await client.request(
+                ds.get("method", "GET"), url,
+                headers=ds.get("headers") or {}
+            )
+            if resp.status_code != 200:
+                return []
+            raw = resp.json()
+            data = raw
+            if ds.get("dataPath"):
+                for part in ds["dataPath"].split('.'):
+                    if isinstance(data, dict):
+                        data = data.get(part, data)
+            return data if isinstance(data, list) else [data]
+    except Exception as e:
+        print(f"[智能问数] API 获取失败 ({url}): {e}")
+        return []
+
+
+def apply_api_filter(rows: list, api_filter) -> list:
+    """对 API 数据做简单过滤"""
+    if not api_filter or not rows:
+        return rows
+    if isinstance(api_filter, dict):
+        field = api_filter.get("field")
+        value = api_filter.get("value")
+        if field and value is not None:
+            return [r for r in rows if str(r.get(field, "")) == str(value)]
+    if isinstance(api_filter, list):
+        result = rows
+        for f in api_filter:
+            result = apply_api_filter(result, f)
+        return result
+    return rows
+
+
+# 安全查询行数上限：给 AI 分析用的数据最多 200 行，展示给用户的最多 50 行
+_QUERY_HARD_LIMIT = 200
+_DISPLAY_LIMIT = 50
+
+
+def _enforce_sql_limit(sql: str, limit: int = _QUERY_HARD_LIMIT) -> str:
+    """
+    强制 SQL 带 LIMIT，防止全量扫描。
+    
+    - 已有 LIMIT: 取 min(原始值, hard_limit)
+    - 没有 LIMIT: 将原始 SQL 包装为子查询并加 LIMIT
+    - 只允许 SELECT，其他语句直接拒绝
+    """
+    sql = sql.strip().rstrip(';')
+    sql_upper = sql.upper().lstrip()
+
+    # 安全检查：只允许 SELECT
+    if not sql_upper.startswith('SELECT'):
+        raise ValueError(f"不允许执行非 SELECT 语句: {sql[:50]}")
+
+    import re
+    # 检查是否已有 LIMIT 子句
+    limit_match = re.search(r'\bLIMIT\s+(\d+)', sql, re.IGNORECASE)
+    if limit_match:
+        existing = int(limit_match.group(1))
+        # 如果已有 LIMIT 但超过上限，强制替换
+        if existing > limit:
+            safe_sql = re.sub(
+                r'\bLIMIT\s+\d+', f'LIMIT {limit}', sql, flags=re.IGNORECASE
+            )
+            print(f"[智能问数] SQL LIMIT 过大 ({existing}→{limit})")
+            return safe_sql
+        return sql
+    else:
+        # 没有 LIMIT，包装为子查询
+        # 对于聚合查询（含 GROUP BY）通常结果行数有限，但仍然加保护
+        safe = f"SELECT * FROM ({sql}) AS _q LIMIT {limit}"
+        print(f"[智能问数] SQL 无 LIMIT，自动加上: LIMIT {limit}")
+        return safe
+
+
+async def execute_query(ds: dict, query: dict) -> tuple:
+    """执行单个查询，返回 (rows, fields)，强制行数安全上限"""
+    ds_type = ds.get("type", "api")
+    try:
+        if ds_type == "database":
+            from app.services.db_connector import query_sql
+            raw_sql = query.get("sql") or f"SELECT * FROM {ds.get('table','?')}"
+            # 强制加 LIMIT，防止全量扫描
+            safe = _enforce_sql_limit(raw_sql, _QUERY_HARD_LIMIT)
+            print(f"[智能问数] 执行SQL: {safe}")
+            result = query_sql(safe)
+            return result.get("data", []), result.get("fields", [])
+        else:
+            # API 类型：拉全量数据（API 本身限制），后端截断 + 过滤
+            rows = await fetch_api_data(ds)
+            # 先截断到上限，再过滤（避免 filter 前内存爆炸）
+            rows = rows[:_QUERY_HARD_LIMIT]
+            api_filter = query.get("apiFilter")
+            if api_filter:
+                rows = apply_api_filter(rows, api_filter)
+            fields = list(rows[0].keys()) if rows else []
+            return rows, fields
+    except Exception as e:
+        print(f"[智能问数] 查询失败 ({ds.get('name')}): {e}")
+        return [], []
+
+
+def extract_json_block(text: str) -> dict:
+    """从 AI 输出中提取 ---JSON--- 标记后的 JSON 块"""
+    marker = "---JSON---"
+    idx = text.find(marker)
+    if idx < 0:
+        # 尝试找末尾的 JSON 对象
+        last_brace = text.rfind("{")
+        if last_brace >= 0:
+            try:
+                return json.loads(text[last_brace:])
+            except json.JSONDecodeError:
+                pass
+        return {}
+    json_str = text[idx + len(marker):].strip()
+    # 去除可能的 markdown 代码块包裹
+    json_str = json_str.strip('`').strip()
+    if json_str.startswith('json'):
+        json_str = json_str[4:].strip()
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        start = json_str.find('{')
+        end = json_str.rfind('}')
+        if start >= 0 and end > start:
+            try:
+                return json.loads(json_str[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+async def ask_stream_generator(request: AskRequest):
+    """
+    智能问数 SSE 流式生成器
+
+    Phase 1: AI 生成查询方案 → 展示查询意图
+    Phase 2: 执行查询 → 立即展示数据表格
+    Phase 3: AI 流式分析 → 文字逐字打出 + 结构化结果
+    """
+    from app.services.kimi import chat_completion_stream
+
+    q = request.question.strip()
+    all_ds = request.allDataSources or []
+
+    if not all_ds:
+        yield sse_event("error", {"message": "当前项目没有可用的数据源，请先到数据源管理中添加。"})
+        return
+
+    # ===== Phase 1: AI 生成查询方案 =====
+    yield sse_event("step", {"phase": "plan", "status": "loading", "detail": "正在理解问题..."})
+
+    try:
+        ds_meta = build_ds_metadata(all_ds)
+        plan = await generate_query_plan(q, ds_meta)
+        queries = plan.get("queries", [])
+        chart_type = plan.get("chartType", "table")
+        chart_title = plan.get("chartTitle", "数据分析")
+        print(f"[智能问数] 查询方案: {len(queries)} 个查询, 图表: {chart_type}")
+    except Exception as e:
+        print(f"[智能问数] Phase1 失败: {e}")
+        yield sse_event("error", {"message": f"查询规划失败: {str(e)}"})
+        return
+
+    yield sse_event("step", {"phase": "plan", "status": "done", "detail": f"已生成 {len(queries)} 个查询方案"})
+
+    # 推送查询方案
+    for query in queries:
+        yield sse_event("query", {
+            "dsId": query.get("dsId"),
+            "dsName": query.get("dsName"),
+            "sql": query.get("sql"),
+            "description": query.get("description"),
+        })
+
+    if not queries:
+        yield sse_event("error", {"message": "AI 未能生成有效的查询方案，请换一种方式提问。"})
+        return
+
+    # ===== Phase 2: 执行查询 =====
+    yield sse_event("step", {"phase": "query", "status": "loading", "detail": "正在查询数据..."})
+
+    # 找到对应的数据源配置
+    ds_map = {ds.get("id"): ds for ds in all_ds}
+    query_results = {}
+
+    for query in queries:
+        ds_id = query.get("dsId")
+        ds = ds_map.get(ds_id)
+        if not ds:
+            # 尝试按名称匹配
+            ds = next((d for d in all_ds if d.get("name") == query.get("dsName")), None)
+        if not ds:
+            print(f"[智能问数] 找不到数据源: {ds_id}")
+            continue
+
+        rows, fields = await execute_query(ds, query)
+        query_results[ds_id or ds.get("id")] = {"rows": rows, "fields": fields, "dsName": ds.get("name")}
+
+        # 每个查询完成立即推数据表格
+        yield sse_event("table", {
+            "dsId": ds.get("id"),
+            "dsName": ds.get("name"),
+            "columns": fields,
+            "rows": rows[:50],
+            "total": len(rows),
+        })
+        print(f"[智能问数] 查询完成: {ds.get('name')} → {len(rows)} 条")
+
+    yield sse_event("step", {"phase": "query", "status": "done", "detail": f"已获取数据"})
+
+    # ===== Phase 3: AI 流式分析 =====
+    yield sse_event("step", {"phase": "analyze", "status": "loading", "detail": "正在分析数据..."})
+
+    # 构建数据摘要给 AI
+    data_parts = []
+    all_rows_for_chart = []
+    first_ds_id = None
+    for ds_id, result in query_results.items():
+        if not first_ds_id:
+            first_ds_id = ds_id
+        rows = result["rows"]
+        fields = result["fields"]
+        all_rows_for_chart = rows
+        data_parts.append(f"【{result['dsName']}】共{len(rows)}条，字段: {', '.join(fields)}")
+        # 给 AI 看前 30 行（查询结果通常已被 SQL 精简过）
+        for row in rows[:30]:
+            data_parts.append(json.dumps(row, ensure_ascii=False))
+        if len(rows) > 30:
+            data_parts.append(f"...（共 {len(rows)} 条，仅展示前 30 条）")
+
+    # 收集 Phase1 的 SQL（用于 widgetConfig，一键入板后组件直接用）
+    first_query_sql = ""
+    for query in queries:
+        if query.get("sql"):
+            first_query_sql = query["sql"]
+            break
+
+    analysis_prompt = f"""基于以下真实查询结果，回答用户的问题。
+
+查询结果：
+{chr(10).join(data_parts)}
+
+用户问题："{q}"
+
+请按以下格式回复：
+1. 先用自然语言回答（2-4段，可以用 **加粗** 强调关键数字，用 - 列表列举要点）
+2. 分析完毕后，另起一行输出 ---JSON--- 标记
+3. 在标记后输出一个 JSON 对象，包含：
+{{
+  "kpi": [{{
+    "label": "指标名",
+    "value": "数值（已格式化，如 128.5万）",
+    "unit": "单位",
+    "trend": "up/down/flat",
+    "change": "+12.3%"
+  }}],
+  "chart": {{
+    "chartType": "{chart_type}",
+    "title": "{chart_title}",
+    "echartsOption": {{}}
+  }},
+  "widgetConfig": {{
+    "type": "{chart_type}",
+    "props": {{"title": "{chart_title}"}},
+    "dataSource": {{
+      "sourceId": "{first_ds_id}",
+      "mapping": {{}},
+      "sql": "{first_query_sql}"
+    }}
+  }}
+}}
+
+echartsOption 要求：
+- 必须包含真实数据（从查询结果中提取）
+- 使用暗色主题友好的配色（如 #00d4ff, #7b61ff, #36d399, #f59e0b）
+- 文字颜色用 #8892b0
+- 分割线颜色用 rgba(255,255,255,0.08)
+- kpi 如果数据中无法提取明确的趋势则可留空数组
+- 如果不适合做图表，chart 和 widgetConfig 可为 null
+- widgetConfig.dataSource.mapping 要正确填写（x/y 或 name/value），不要留空
+- widgetConfig.dataSource.sql 是添加到看板后组件执行的查询（已填好，保持不变）"""
+
+    try:
+        buffer = ""
+        json_marker = "---JSON---"
+        marker_found = False
+        # pending 用于暂存可能是 marker 开头的文字，防止 marker 分 token 到达时泄露
+        pending = ""
+
+        async for token in chat_completion_stream([
+            {"role": "system", "content": "你是专业数据分析师，擅长从数据中发现洞察并给出可视化建议。回答简洁有力。"},
+            {"role": "user", "content": analysis_prompt}
+        ]):
+            buffer += token
+            if marker_found:
+                continue  # marker 已找到，后续 token 都是 JSON 部分，不推送
+
+            pending += token
+
+            if json_marker in pending:
+                # marker 完整出现，推送 marker 之前的文字
+                before = pending[:pending.index(json_marker)]
+                if before:
+                    yield sse_event("text", {"delta": before})
+                marker_found = True
+                continue
+
+            # 如果 pending 末尾可能是 marker 的前缀，暂不推送
+            safe_len = len(pending) - len(json_marker) + 1
+            if safe_len > 0:
+                yield sse_event("text", {"delta": pending[:safe_len]})
+                pending = pending[safe_len:]
+
+        # 流结束，解析结构化 JSON
+        structured = extract_json_block(buffer)
+        if structured:
+            yield sse_event("result", structured)
+
+    except Exception as e:
+        print(f"[智能问数] Phase3 分析失败: {e}")
+        yield sse_event("text", {"delta": f"\n\n分析过程出现问题: {str(e)}"})
+
+    yield sse_event("step", {"phase": "analyze", "status": "done", "detail": "分析完成"})
+    yield sse_event("done", {})
+
+
+@router.post("/ask")
+async def ask_data(request: AskRequest):
+    """
+    智能问数 — SSE 流式端点
+
+    Phase 1: AI 生成查询方案（JSON 模式）→ 展示查询意图
+    Phase 2: 执行真实查询 → 立即展示数据表格
+    Phase 3: AI 流式分析 → 文字逐字打出 + 图表/KPI
+    """
+    return StreamingResponse(
+        ask_stream_generator(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
