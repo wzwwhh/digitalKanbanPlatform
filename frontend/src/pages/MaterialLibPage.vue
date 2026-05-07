@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { getAllWidgets } from '../core/registry'
 import { useCustomTemplatesStore } from '../stores/customTemplates'
 import { useDialog } from '../composables/useDialog'
+import { apiUrl } from '../config/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -92,7 +93,7 @@ async function aiCreateTemplate() {
   aiLoading.value = true
 
   try {
-    const resp = await fetch('/api/ai/chat', {
+    const resp = await fetch(apiUrl('/ai/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

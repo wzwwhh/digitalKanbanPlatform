@@ -5,6 +5,10 @@ python-dotenv>=1.0.0
 httpx>=0.27.0
 openai>=1.30.0
 pydantic>=2.0.0
-sqlalchemy>=2.0.0
+nanoid>=2.0.0
+
+# 数据库相关 - 使用兼容性更好的版本
+sqlalchemy>=2.0.0,<2.1.0
+greenlet>=2.0.0,<4.0.0  # 明确指定 greenlet 版本范围
 pymysql>=1.1.0
 psycopg2-binary>=2.9.0

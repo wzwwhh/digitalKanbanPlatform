@@ -67,9 +67,33 @@ class DbQueryRequest(BaseModel):
 
 @router.post("/db/query")
 async def db_query_endpoint(request: DbQueryRequest):
-    """执行 SQL 查询（只允许 SELECT）"""
+    """执行 SQL 查询（只允许 SELECT）- 使用默认 SQLite 数据库"""
     try:
         result = query_sql(request.sql)
+        return {"success": True, **result}
+    except Exception as e:
+        return {"success": False, "fields": [], "data": [], "rowCount": 0, "message": str(e)}
+
+
+class CustomDbQueryRequest(BaseModel):
+    sql: str
+    dbType: str = "sqlite"
+    dbPath: Optional[str] = None
+    host: Optional[str] = "localhost"
+    port: Optional[int] = 3306
+    user: Optional[str] = "root"
+    password: Optional[str] = ""
+    database: Optional[str] = ""
+
+
+@router.post("/db/query-custom")
+async def db_query_custom_endpoint(request: CustomDbQueryRequest):
+    """执行 SQL 查询（支持自定义数据库连接）"""
+    try:
+        kwargs = {"host": request.host, "port": request.port,
+                  "user": request.user, "password": request.password,
+                  "database": request.database}
+        result = query_sql(request.sql, db_path=request.dbPath, db_type=request.dbType, **kwargs)
         return {"success": True, **result}
     except Exception as e:
         return {"success": False, "fields": [], "data": [], "rowCount": 0, "message": str(e)}

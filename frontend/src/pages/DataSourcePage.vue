@@ -1,21 +1,39 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useProjectStore } from '../stores/project'
 import { useRoute } from 'vue-router'
 import { useDialog } from '../composables/useDialog'
+import { useToast } from '../composables/useToast'
+import { apiUrl } from '../config/api'
 
 const route = useRoute()
 const projectStore = useProjectStore()
 const { confirm: showConfirm } = useDialog()
+const toast = useToast()
 
 const projectId = computed(() => route.params.projectId)
-const dataSources = computed(() => projectStore.currentProject?.dataSources || [])
+const dataSources = computed(() => {
+  const sources = Array.isArray(projectStore.currentProject?.dataSources)
+    ? projectStore.currentProject.dataSources
+    : []
+  // 为新数据源初始化默认折叠状态
+  for (const ds of sources) {
+    if (!(ds?.id in cardSampleCollapsed.value)) {
+      cardSampleCollapsed.value[ds?.id] = true  // 默认折叠
+    }
+    if (!(ds?.id in cardFieldsCollapsed.value)) {
+      cardFieldsCollapsed.value[ds?.id] = true  // 默认折叠
+    }
+  }
+  return sources
+})
 
 // 表单状态
 const showForm = ref(false)
 const formTab = ref('api')  // 'api' | 'database'
 const probing = ref(false)
 const probeResult = ref(null)
+const editingDataSourceId = ref(null)  // 正在编辑的数据源 ID（null 表示新增模式）
 const form = ref({
   name: '',
   url: '',
@@ -35,35 +53,82 @@ const dbTables = ref([])
 const dbForm = ref({
   name: '',
   table: '',
-  sql: '',
+  whereCondition: '',  // 改为 WHERE 条件（不包含 WHERE 关键字）
   description: '',
 })
 const dbInfo = ref(null)
 const dbProbeResult = ref(null)
 const dbProbing = ref(false)
+const editingDbDataSourceId = ref(null)  // 数据库数据源编辑模式
 
-// 自定义数据库连接
-const customDbMode = ref(false)
+// 数据库连接配置
+const dbConnectionType = ref('default')  // 'default' | 'sqlite' | 'mysql' | 'postgresql'
 const customDb = ref({
-  dbType: 'sqlite',
-  dbPath: '',
-  host: 'localhost',
-  port: 3306,
-  user: 'root',
-  password: '',
-  database: '',
+  dbPath: '',           // SQLite 文件路径
+  host: 'localhost',    // MySQL/PostgreSQL 主机
+  port: 3306,           // MySQL/PostgreSQL 端口
+  user: 'root',         // MySQL/PostgreSQL 用户名
+  password: '',         // MySQL/PostgreSQL 密码
+  database: '',         // MySQL/PostgreSQL 数据库名
 })
 const customConnecting = ref(false)
+
+// 跨项目复制弹窗
+const showProjectSelector = ref(false)
+const selectedProjectId = ref('')
+const selectedDataSources = ref([])
+const availableProjects = computed(() =>
+  (Array.isArray(projectStore.projects) ? projectStore.projects : []).filter(
+    p => p?.id !== projectStore.currentProject?.id
+  )
+)
+const availableDataSources = computed(() => {
+  if (!selectedProjectId.value) return []
+  const proj = (Array.isArray(projectStore.projects) ? projectStore.projects : []).find(
+    p => p?.id === selectedProjectId.value
+  )
+  return Array.isArray(proj?.dataSources) ? proj.dataSources : []
+})
+
+// 监听数据库类型切换，自动设置默认端口和用户名
+watch(dbConnectionType, (newType) => {
+  if (newType === 'mysql') {
+    customDb.value.port = 3306
+    customDb.value.user = 'root'
+  } else if (newType === 'postgresql') {
+    customDb.value.port = 5432
+    customDb.value.user = 'postgres'
+  }
+})
 
 // AI 字段推测
 const inferring = ref(false)
 
+// 字段列表折叠状态
+const fieldsCollapsed = ref(false)
+
+// 示例数据折叠状态
+const apiSampleCollapsed = ref(false)      // API探测结果示例数据
+const dbSampleCollapsed = ref(false)       // 数据库探测结果示例数据
+const cardSampleCollapsed = ref({})        // 数据源卡片示例数据（按 ds.id 索引）
+const cardFieldsCollapsed = ref({})        // 数据源卡片字段列表（按 ds.id 索引）
+
+// 切换卡片示例数据折叠状态
+function toggleCardSample(dsId) {
+  cardSampleCollapsed.value[dsId] = !cardSampleCollapsed.value[dsId]
+}
+
+// 切换卡片字段列表折叠状态
+function toggleCardFields(dsId) {
+  cardFieldsCollapsed.value[dsId] = !cardFieldsCollapsed.value[dsId]
+}
+
 // 内置 Mock 数据源
 const mockSources = [
-  { label: '📊 模拟销售数据', url: '/api/mock/sales', desc: '月度×品类：sales, revenue, orders' },
-  { label: '👥 模拟用户统计', url: '/api/mock/users', desc: '日PV/UV + 渠道分布' },
-  { label: '📦 模拟订单列表', url: '/api/mock/orders', desc: '订单ID、产品、金额、状态' },
-  { label: '🎯 模拟KPI汇总', url: '/api/mock/kpi', desc: '今日订单、营收、转化率等' },
+  { label: '📊 模拟销售数据', url: apiUrl('/mock/sales'), desc: '月度×品类：sales, revenue, orders' },
+  { label: '👥 模拟用户统计', url: apiUrl('/mock/users'), desc: '日PV/UV + 渠道分布' },
+  { label: '📦 模拟订单列表', url: apiUrl('/mock/orders'), desc: '订单ID、产品、金额、状态' },
+  { label: '🎯 模拟KPI汇总', url: apiUrl('/mock/kpi'), desc: '今日订单、营收、转化率等' },
 ]
 
 function useMockSource(mock) {
@@ -73,6 +138,44 @@ function useMockSource(mock) {
   form.value.dataPath = ''
   showForm.value = true
   probeResult.value = null
+  editingDataSourceId.value = null  // 重置为新增模式
+}
+
+// 编辑现有数据源（重新探测）
+function editDataSource(ds) {
+  form.value.name = ds.name
+  form.value.url = ds.url
+  form.value.method = ds.method || 'GET'
+  form.value.dataPath = ds.dataPath || ''
+  form.value.headers = ds.headers ? JSON.stringify(ds.headers, null, 2) : ''
+  form.value.body = ds.body ? JSON.stringify(ds.body, null, 2) : ''
+  form.value.description = ds.description || ''
+
+  editingDataSourceId.value = ds.id  // 设置为编辑模式
+  showForm.value = true
+  formTab.value = 'api'
+  probeResult.value = null
+  fieldAnnotations.value = { ...(ds.fieldAnnotations || {}) }
+}
+
+// 编辑数据库数据源（重新探测）
+function editDbDataSource(ds) {
+  dbForm.value.name = ds.name
+  dbForm.value.table = ds.table
+  dbForm.value.whereCondition = ds.whereCondition || ''
+  dbForm.value.description = ds.description || ''
+
+  editingDbDataSourceId.value = ds.id  // 设置为编辑模式
+  showForm.value = true
+  formTab.value = 'database'
+  dbProbeResult.value = null
+  fieldAnnotations.value = { ...(ds.fieldAnnotations || {}) }
+
+  // 加载数据库表列表
+  if (dbTables.value.length === 0) {
+    loadDbTables()
+    loadDbInfo()
+  }
 }
 
 async function probeApi() {
@@ -81,12 +184,25 @@ async function probeApi() {
   probeResult.value = null
 
   try {
-    const resp = await fetch('/api/data/probe', {
+    // 解析自定义请求头
+    let customHeaders = null
+    if (form.value.headers && form.value.headers.trim()) {
+      try {
+        customHeaders = JSON.parse(form.value.headers)
+      } catch (e) {
+        probeResult.value = { status: -1, fields: [], sample: [], structure: `请求头 JSON 格式错误: ${e.message}` }
+        probing.value = false
+        return
+      }
+    }
+
+    const resp = await fetch(apiUrl('/data/probe'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url: form.value.url,
         method: form.value.method,
+        headers: customHeaders,
       }),
     })
     probeResult.value = await resp.json()
@@ -135,13 +251,21 @@ function saveDataSource() {
     createdAt: new Date().toISOString(),
   }
 
-  projectStore.addDataSource(ds)
+  // 判断是更新还是新增
+  if (editingDataSourceId.value) {
+    // 更新模式
+    projectStore.updateDataSource(editingDataSourceId.value, ds)
+  } else {
+    // 新增模式
+    projectStore.addDataSource(ds)
+  }
 
   // 重置
   showForm.value = false
   form.value = { name: '', url: '', method: 'GET', dataPath: '', headers: '', body: '', description: '' }
   probeResult.value = null
   fieldAnnotations.value = {}
+  editingDataSourceId.value = null
 }
 
 async function removeDs(dsId) {
@@ -162,7 +286,7 @@ function cancelForm() {
 
 async function loadDbTables() {
   try {
-    const resp = await fetch('/api/data/db/tables')
+    const resp = await fetch(apiUrl('/data/db/tables'))
     const data = await resp.json()
     if (data.success) {
       dbTables.value = data.tables.filter(t => t !== 'sqlite_sequence')
@@ -176,17 +300,30 @@ async function probeDbTable() {
   if (!dbForm.value.table) return
   dbProbing.value = true
   dbProbeResult.value = null
+
   try {
-    const resp = await fetch('/api/data/db/probe', {
+    // 根据数据库类型选择不同的探测接口
+    let endpoint = apiUrl('/data/db/probe')
+    let payload = { table: dbForm.value.table }
+
+    if (dbConnectionType.value !== 'default') {
+      // 使用自定义数据库探测接口
+      endpoint = apiUrl('/data/db/probe-custom')
+      payload = {
+        table: dbForm.value.table,
+        dbType: dbConnectionType.value,
+        ...customDb.value
+      }
+    }
+
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ table: dbForm.value.table }),
+      body: JSON.stringify(payload),
     })
     dbProbeResult.value = await resp.json()
-    // 自动生成默认 SQL
-    if (!dbForm.value.sql) {
-      dbForm.value.sql = `SELECT * FROM ${dbForm.value.table}`
-    }
+
+    // 自动生成默认名称
     if (!dbForm.value.name) {
       dbForm.value.name = dbForm.value.table
     }
@@ -208,14 +345,27 @@ function saveDbDataSource() {
   const autoAnnotations = {}
   fieldsRaw.forEach(f => { autoAnnotations[f.name] = f.type || '' })
 
+  // 拼接 SQL：基础查询 + WHERE 条件（如果有）
+  let sql = `SELECT * FROM ${dbForm.value.table}`
+  if (dbForm.value.whereCondition.trim()) {
+    sql += ` WHERE ${dbForm.value.whereCondition.trim()}`
+  }
+
   const ds = {
     name: dbForm.value.name.trim(),
     type: 'database',
     table: dbForm.value.table,
-    sql: dbForm.value.sql || `SELECT * FROM ${dbForm.value.table}`,
+    whereCondition: dbForm.value.whereCondition.trim(),  // 保存 WHERE 条件
+    sql,  // 完整的 SQL（用于实际查询）
     description: dbForm.value.description,
-    dbPath: dbInfo.value?.path || 'sample_data.db',
-    dbType: 'SQLite',
+    // 保存数据库连接信息
+    dbType: dbConnectionType.value === 'default' ? 'sqlite' : dbConnectionType.value,
+    dbPath: dbConnectionType.value === 'sqlite' ? customDb.value.dbPath : (dbInfo.value?.path || 'sample_data.db'),
+    dbHost: customDb.value.host,
+    dbPort: customDb.value.port,
+    dbUser: customDb.value.user,
+    dbPassword: customDb.value.password,
+    dbDatabase: customDb.value.database,
     fields,
     fieldAnnotations: { ...autoAnnotations, ...fieldAnnotations.value },
     sample: dbProbeResult.value?.sample?.slice(0, 3) || [],
@@ -223,11 +373,17 @@ function saveDbDataSource() {
     createdAt: new Date().toISOString(),
   }
 
-  projectStore.addDataSource(ds)
+  // 判断是新增还是更新
+  if (editingDbDataSourceId.value) {
+    projectStore.updateDataSource(editingDbDataSourceId.value, ds)
+    editingDbDataSourceId.value = null
+  } else {
+    projectStore.addDataSource(ds)
+  }
 
   // 重置
   showForm.value = false
-  dbForm.value = { name: '', table: '', sql: '', description: '' }
+  dbForm.value = { name: '', table: '', whereCondition: '', description: '' }
   dbProbeResult.value = null
   fieldAnnotations.value = {}
   formTab.value = 'api'
@@ -243,7 +399,7 @@ function switchFormTab(tab) {
 
 async function loadDbInfo() {
   try {
-    const resp = await fetch('/api/data/db/tables')
+    const resp = await fetch(apiUrl('/data/db/tables'))
     const data = await resp.json()
     if (data.success) {
       dbInfo.value = { path: data.dbPath || 'sample_data.db', tables: data.tables?.length || 0 }
@@ -272,20 +428,30 @@ function cancelEditAnnotations() {
 async function connectCustomDb() {
   customConnecting.value = true
   try {
-    const resp = await fetch('/api/data/db/connect', {
+    const payload = {
+      dbType: dbConnectionType.value,
+      ...customDb.value
+    }
+
+    const resp = await fetch(apiUrl('/data/db/connect'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(customDb.value),
+      body: JSON.stringify(payload),
     })
     const data = await resp.json()
     if (data.success) {
       dbTables.value = data.tables
-      dbInfo.value = { path: data.dbPath, tables: data.tables.length, type: data.dbType }
+      dbInfo.value = {
+        path: data.dbPath,
+        tables: data.tables.length,
+        type: dbConnectionType.value === 'default' ? 'SQLite' : dbConnectionType.value.toUpperCase()
+      }
+      toast.success('✅ 连接成功！已加载 ' + data.tables.length + ' 张表')
     } else {
-      alert('连接失败: ' + (data.message || '未知错误'))
+      toast.error('❌ 连接失败: ' + (data.message || '未知错误'))
     }
   } catch (e) {
-    alert('连接失败: ' + e.message)
+    toast.error('❌ 连接失败: ' + e.message)
   } finally {
     customConnecting.value = false
   }
@@ -295,7 +461,7 @@ async function connectCustomDb() {
 async function aiInferFields(fields, sample) {
   inferring.value = true
   try {
-    const resp = await fetch('/api/data/infer-fields', {
+    const resp = await fetch(apiUrl('/data/infer-fields'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields, sample: sample?.slice(0, 3) || [] }),
@@ -308,64 +474,69 @@ async function aiInferFields(fields, sample) {
   finally { inferring.value = false }
 }
 
-// 数据源导出 JSON
-function exportDataSources() {
-  const data = JSON.stringify(dataSources.value, null, 2)
-  const blob = new Blob([data], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'datasources.json'
-  a.click()
-  URL.revokeObjectURL(url)
-}
 
-// 数据源导入 JSON
-function importDataSources() {
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = '.json'
-  input.onchange = async (e) => {
-    const file = e.target.files[0]
-    if (!file) return
-    const text = await file.text()
-    try {
-      const list = JSON.parse(text)
-      if (!Array.isArray(list)) { alert('格式错误：需要 JSON 数组'); return }
-      list.forEach(ds => {
-        const { id, ...rest } = ds
-        projectStore.addDataSource(rest)
-      })
-      alert(`成功导入 ${list.length} 个数据源`)
-    } catch { alert('JSON 解析失败') }
-  }
-  input.click()
-}
-
-// 数据源跨项目复制
-async function copyFromOtherProject() {
-  const otherProjects = projectStore.projects.filter(p => p.id !== projectStore.currentProject?.id)
-  if (otherProjects.length === 0) {
-    alert('没有其他可用的项目。')
+// 跨项目导入数据源
+function copyFromOtherProject() {
+  if (availableProjects.value.length === 0) {
+    toast.warning('⚠️ 没有其他项目可供导入')
     return
   }
-  
-  const options = otherProjects.map((p, i) => `${i + 1}. ${p.name} (${p.dataSources?.length || 0} 个数据源)`).join('\n')
-  const choice = prompt(`请选择要从中复制数据源的项目编号：\n\n${options}\n\n输入编号（如 1）：`)
-  
-  if (!choice) return
-  const index = parseInt(choice, 10) - 1
-  if (index >= 0 && index < otherProjects.length) {
-    const fromProj = otherProjects[index]
-    const count = projectStore.copyDataSources(fromProj.id)
-    if (count > 0) {
-      alert(`成功复制了 ${count} 个数据源！`)
-    } else {
-      alert('没有可复制的数据源或数据源已存在。')
-    }
+  selectedProjectId.value = ''
+  selectedDataSources.value = []
+  showProjectSelector.value = true
+}
+
+function selectProject(projectId) {
+  selectedProjectId.value = projectId
+  selectedDataSources.value = []
+}
+
+function toggleDataSource(dsId) {
+  const index = selectedDataSources.value.indexOf(dsId)
+  if (index > -1) {
+    selectedDataSources.value.splice(index, 1)
   } else {
-    alert('无效的编号。')
+    selectedDataSources.value.push(dsId)
   }
+}
+
+function toggleSelectAll() {
+  if (selectedDataSources.value.length === availableDataSources.value.length) {
+    selectedDataSources.value = []
+  } else {
+    selectedDataSources.value = availableDataSources.value.map(ds => ds.id)
+  }
+}
+
+function confirmImport() {
+  if (selectedDataSources.value.length === 0) {
+    toast.warning('⚠️ 请至少选择一个数据源')
+    return
+  }
+
+  const fromProj = (Array.isArray(projectStore.projects) ? projectStore.projects : []).find(
+    p => p.id === selectedProjectId.value
+  )
+  if (!fromProj) return
+
+  const sourceList = Array.isArray(fromProj.dataSources) ? fromProj.dataSources : []
+  let imported = 0
+  for (const dsId of selectedDataSources.value) {
+    const ds = sourceList.find(d => d.id === dsId)
+    if (ds) {
+      const { id, ...rest } = ds
+      projectStore.addDataSource(rest)
+      imported++
+    }
+  }
+
+  if (imported > 0) {
+    toast.success(`✅ 成功从「${fromProj.name}」导入了 ${imported} 个数据源！`)
+  }
+
+  showProjectSelector.value = false
+  selectedProjectId.value = ''
+  selectedDataSources.value = []
 }
 </script>
 
@@ -374,9 +545,7 @@ async function copyFromOtherProject() {
     <div class="page-header">
       <h1>数据源管理</h1>
       <div class="header-actions">
-        <button class="btn-sm" @click="copyFromOtherProject" title="从其他项目复制">📋 复制跨项目</button>
-        <button class="btn-sm" @click="importDataSources" title="从 JSON 导入">📥 导入</button>
-        <button class="btn-sm" @click="exportDataSources" v-if="dataSources.length" title="导出为 JSON">📤 导出</button>
+        <button class="btn-sm" @click="copyFromOtherProject" title="从其他项目导入数据源">📥 导入数据源</button>
         <button class="btn-add" @click="showForm = true" v-if="!showForm">＋ 添加数据源</button>
       </div>
     </div>
@@ -458,21 +627,33 @@ async function copyFromOtherProject() {
 
           <div class="fields-section">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-              <span class="fields-title" style="margin:0;">发现 {{ probeResult.fields?.length || 0 }} 个字段</span>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <button class="btn-collapse" @click="fieldsCollapsed = !fieldsCollapsed">
+                  {{ fieldsCollapsed ? '▶' : '▼' }}
+                </button>
+                <span class="fields-title" style="margin:0;">发现 {{ probeResult.fields?.length || 0 }} 个字段</span>
+              </div>
               <button class="btn-sm" @click="aiInferFields(probeResult.fields, probeResult.sample)" :disabled="inferring">
                 {{ inferring ? '推测中...' : '🤖 AI 推测含义' }}
               </button>
             </div>
-            <div class="fields-list">
-              <span v-for="f in probeResult.fields" :key="f" class="field-tag">
-                {{ f }}<small v-if="fieldAnnotations[f]" style="opacity:0.6;margin-left:4px;">({{ fieldAnnotations[f] }})</small>
-              </span>
+            <!-- 使用表格样式展示字段 -->
+            <div v-show="!fieldsCollapsed" class="fields-table">
+              <div v-for="f in probeResult.fields" :key="f" class="field-row">
+                <span class="field-tag">{{ f }}</span>
+                <span class="field-annotation" v-if="fieldAnnotations[f]">{{ fieldAnnotations[f] }}</span>
+              </div>
             </div>
           </div>
 
           <div class="sample-section" v-if="probeResult.sample?.length">
-            <div class="fields-title">示例数据（前 {{ Math.min(probeResult.sample.length, 3) }} 条）</div>
-            <pre class="sample-json">{{ JSON.stringify(probeResult.sample.slice(0, 3), null, 2) }}</pre>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <button class="btn-collapse" @click="apiSampleCollapsed = !apiSampleCollapsed">
+                {{ apiSampleCollapsed ? '▶' : '▼' }}
+              </button>
+              <span class="fields-title" style="margin:0;">示例数据（前 {{ Math.min(probeResult.sample.length, 3) }} 条）</span>
+            </div>
+            <pre v-show="!apiSampleCollapsed" class="sample-json">{{ JSON.stringify(probeResult.sample.slice(0, 3), null, 2) }}</pre>
           </div>
         </div>
 
@@ -484,7 +665,7 @@ async function copyFromOtherProject() {
 
       <div class="form-actions">
         <button class="btn-save" @click="saveDataSource" :disabled="!probeResult || probeResult.status === -1">
-          💾 保存数据源
+          {{ editingDataSourceId ? '💾 更新数据源' : '💾 保存数据源' }}
         </button>
         <button class="btn-cancel" @click="cancelForm">取消</button>
       </div>
@@ -492,64 +673,95 @@ async function copyFromOtherProject() {
 
     <!-- 数据库表单 -->
     <section class="form-section" v-if="showForm && formTab === 'database'">
-      <div class="section-title">连接数据库</div>
+      <div class="section-title" style="margin-bottom:16px;">连接数据库</div>
 
-      <!-- 数据库连接信息 -->
-      <div class="db-info-bar" v-if="dbInfo">
-        <span class="db-info-item">🗄️ {{ dbInfo.type || 'SQLite' }}</span>
-        <span class="db-info-item">📂 {{ dbInfo.path }}</span>
-        <span class="db-info-item">📋 {{ dbInfo.tables }} 张表</span>
-      </div>
-
-      <!-- 自定义连接切换 -->
+      <!-- 数据库类型选择 -->
       <div class="form-row">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-          <input type="checkbox" v-model="customDbMode" /> 使用自定义数据库连接
-        </label>
+        <label>数据库类型</label>
+        <select v-model="dbConnectionType" class="form-input" style="width:200px;">
+          <option value="default">默认 SQLite (内置示例库)</option>
+          <option value="sqlite">SQLite (自定义文件)</option>
+          <option value="mysql">MySQL</option>
+          <option value="postgresql">PostgreSQL</option>
+        </select>
       </div>
 
-      <!-- 自定义连接表单 -->
-      <div v-if="customDbMode" class="form-section" style="margin-bottom:12px;">
+      <!-- 默认 SQLite -->
+      <div v-if="dbConnectionType === 'default'" class="db-info-bar" style="margin-bottom:16px;">
+        <span class="db-info-item">🗄️ SQLite</span>
+        <span class="db-info-item">📂 {{ dbInfo?.path || 'sample_data.db' }}</span>
+        <span class="db-info-item">📋 {{ dbInfo?.tables || 0 }} 张表</span>
+      </div>
+
+      <!-- 自定义 SQLite -->
+      <div v-if="dbConnectionType === 'sqlite'" class="custom-db-form">
         <div class="form-row">
-          <label>数据库类型</label>
-          <select v-model="customDb.dbType" class="form-input" style="width:120px;">
-            <option value="sqlite">SQLite</option>
-            <option value="mysql">MySQL</option>
-          </select>
+          <label>文件路径</label>
+          <input v-model="customDb.dbPath" class="form-input" placeholder="如: /path/to/database.db" />
         </div>
-        <template v-if="customDb.dbType === 'sqlite'">
-          <div class="form-row">
-            <label>文件路径</label>
-            <input v-model="customDb.dbPath" class="form-input" placeholder="如 /path/to/my.db" />
+        <button class="btn-probe" @click="connectCustomDb" :disabled="customConnecting || !customDb.dbPath">
+          {{ customConnecting ? '连接中...' : '🔌 测试连接' }}
+        </button>
+      </div>
+
+      <!-- MySQL -->
+      <div v-if="dbConnectionType === 'mysql'" class="custom-db-form">
+        <div class="form-row url-row">
+          <div class="flex-1">
+            <label>主机</label>
+            <input v-model="customDb.host" class="form-input" placeholder="localhost 或 IP 地址" />
           </div>
-        </template>
-        <template v-else>
-          <div class="form-row url-row">
-            <div class="flex-1">
-              <label>主机</label>
-              <input v-model="customDb.host" class="form-input" placeholder="localhost" />
-            </div>
-            <div style="width:80px;">
-              <label>端口</label>
-              <input v-model.number="customDb.port" class="form-input" placeholder="3306" />
-            </div>
+          <div style="width:100px;">
+            <label>端口</label>
+            <input v-model.number="customDb.port" class="form-input" placeholder="3306" />
           </div>
-          <div class="form-row url-row">
-            <div class="flex-1">
-              <label>用户名</label>
-              <input v-model="customDb.user" class="form-input" placeholder="root" />
-            </div>
-            <div class="flex-1">
-              <label>密码</label>
-              <input v-model="customDb.password" class="form-input" type="password" placeholder="密码" />
-            </div>
+        </div>
+        <div class="form-row url-row">
+          <div class="flex-1">
+            <label>用户名</label>
+            <input v-model="customDb.user" class="form-input" placeholder="root" />
           </div>
-          <div class="form-row">
-            <label>数据库名</label>
-            <input v-model="customDb.database" class="form-input" placeholder="my_database" />
+          <div class="flex-1">
+            <label>密码</label>
+            <input v-model="customDb.password" class="form-input" type="password" placeholder="密码" />
           </div>
-        </template>
-        <button class="btn-probe" @click="connectCustomDb" :disabled="customConnecting">
+        </div>
+        <div class="form-row">
+          <label>数据库名</label>
+          <input v-model="customDb.database" class="form-input" placeholder="my_database" />
+        </div>
+        <button class="btn-probe" @click="connectCustomDb" :disabled="customConnecting || !customDb.host || !customDb.database">
+          {{ customConnecting ? '连接中...' : '🔌 测试连接' }}
+        </button>
+      </div>
+
+      <!-- PostgreSQL -->
+      <div v-if="dbConnectionType === 'postgresql'" class="custom-db-form">
+        <div class="form-row url-row">
+          <div class="flex-1">
+            <label>主机</label>
+            <input v-model="customDb.host" class="form-input" placeholder="localhost 或 IP 地址" />
+          </div>
+          <div style="width:100px;">
+            <label>端口</label>
+            <input v-model.number="customDb.port" class="form-input" placeholder="5432" />
+          </div>
+        </div>
+        <div class="form-row url-row">
+          <div class="flex-1">
+            <label>用户名</label>
+            <input v-model="customDb.user" class="form-input" placeholder="postgres" />
+          </div>
+          <div class="flex-1">
+            <label>密码</label>
+            <input v-model="customDb.password" class="form-input" type="password" placeholder="密码" />
+          </div>
+        </div>
+        <div class="form-row">
+          <label>数据库名</label>
+          <input v-model="customDb.database" class="form-input" placeholder="my_database" />
+        </div>
+        <button class="btn-probe" @click="connectCustomDb" :disabled="customConnecting || !customDb.host || !customDb.database">
           {{ customConnecting ? '连接中...' : '🔌 测试连接' }}
         </button>
       </div>
@@ -573,8 +785,9 @@ async function copyFromOtherProject() {
       </div>
 
       <div class="form-row" v-if="dbProbeResult?.success">
-        <label>SQL 查询（可选自定义）</label>
-        <textarea v-model="dbForm.sql" class="form-input sql-input" rows="3" placeholder="SELECT * FROM ..."></textarea>
+        <label>WHERE 条件（可选）</label>
+        <input v-model="dbForm.whereCondition" class="form-input" placeholder="例如: year = 2024 AND status = 'active'" />
+        <p class="hint" style="margin-top:4px;font-size:12px;color:#666;">💡 只需填写WHERE后的条件部分，系统会自动拼接完整SQL</p>
       </div>
 
       <div class="form-row">
@@ -590,14 +803,28 @@ async function copyFromOtherProject() {
             <span class="structure-tag">{{ dbProbeResult.rowCount }} 行数据</span>
           </div>
           <div class="fields-section">
-            <div class="fields-title">发现 {{ dbProbeResult.fields?.length || 0 }} 个字段</div>
-            <div class="fields-list">
-              <span v-for="f in dbProbeResult.fields" :key="f.name" class="field-tag">{{ f.name }} <small>({{ f.type }})</small></span>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <button class="btn-collapse" @click="fieldsCollapsed = !fieldsCollapsed">
+                {{ fieldsCollapsed ? '▶' : '▼' }}
+              </button>
+              <span class="fields-title" style="margin:0;">发现 {{ dbProbeResult.fields?.length || 0 }} 个字段</span>
+            </div>
+            <!-- 使用表格样式展示字段 -->
+            <div v-show="!fieldsCollapsed" class="fields-table">
+              <div v-for="f in dbProbeResult.fields" :key="f.name" class="field-row">
+                <span class="field-tag">{{ f.name }}</span>
+                <span class="field-annotation">{{ f.type }}</span>
+              </div>
             </div>
           </div>
           <div class="sample-section" v-if="dbProbeResult.sample?.length">
-            <div class="fields-title">示例数据（前 {{ Math.min(dbProbeResult.sample.length, 3) }} 条）</div>
-            <pre class="sample-json">{{ JSON.stringify(dbProbeResult.sample.slice(0, 3), null, 2) }}</pre>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <button class="btn-collapse" @click="dbSampleCollapsed = !dbSampleCollapsed">
+                {{ dbSampleCollapsed ? '▶' : '▼' }}
+              </button>
+              <span class="fields-title" style="margin:0;">示例数据（前 {{ Math.min(dbProbeResult.sample.length, 3) }} 条）</span>
+            </div>
+            <pre v-show="!dbSampleCollapsed" class="sample-json">{{ JSON.stringify(dbProbeResult.sample.slice(0, 3), null, 2) }}</pre>
           </div>
         </div>
         <div v-else class="probe-fail">
@@ -608,7 +835,7 @@ async function copyFromOtherProject() {
 
       <div class="form-actions">
         <button class="btn-save" @click="saveDbDataSource" :disabled="!dbProbeResult?.success">
-          💾 保存数据源
+          {{ editingDbDataSourceId ? '💾 更新数据源' : '💾 保存数据源' }}
         </button>
         <button class="btn-cancel" @click="cancelForm">取消</button>
       </div>
@@ -670,16 +897,23 @@ async function copyFromOtherProject() {
           <!-- 字段列表 + 注释 -->
           <div class="ds-fields-section">
             <div class="fields-header">
-              <span class="fields-title">字段（{{ (ds.fields || []).length }}）</span>
-              <button v-if="editingDsId !== ds.id" class="btn-sm" @click="startEditAnnotations(ds)">✏️ 编辑注释</button>
-              <template v-else>
-                <button class="btn-sm" @click="saveAnnotations(ds)">💾 保存</button>
-                <button class="btn-sm" @click="cancelEditAnnotations">取消</button>
-              </template>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <button class="btn-collapse" @click="toggleCardFields(ds.id)">
+                  {{ cardFieldsCollapsed[ds.id] ? '▶' : '▼' }}
+                </button>
+                <span class="fields-title" style="margin:0;">字段（{{ (ds.fields || []).length }}）</span>
+              </div>
+              <div v-show="!cardFieldsCollapsed[ds.id]">
+                <button v-if="editingDsId !== ds.id" class="btn-sm" @click="startEditAnnotations(ds)">✏️ 编辑注释</button>
+                <template v-else>
+                  <button class="btn-sm" @click="saveAnnotations(ds)">💾 保存</button>
+                  <button class="btn-sm" @click="cancelEditAnnotations">取消</button>
+                </template>
+              </div>
             </div>
 
             <!-- 查看模式 -->
-            <div class="fields-table" v-if="editingDsId !== ds.id">
+            <div v-show="!cardFieldsCollapsed[ds.id]" class="fields-table" v-if="editingDsId !== ds.id">
               <div v-for="f in (ds.fields || [])" :key="f" class="field-row">
                 <span class="field-tag">{{ f }}</span>
                 <span class="field-annotation" v-if="(ds.fieldAnnotations || {})[f]">{{ ds.fieldAnnotations[f] }}</span>
@@ -687,7 +921,7 @@ async function copyFromOtherProject() {
             </div>
 
             <!-- 编辑模式 -->
-            <div class="fields-table editing" v-else>
+            <div v-show="!cardFieldsCollapsed[ds.id]" class="fields-table editing" v-else>
               <div v-for="f in (ds.fields || [])" :key="f" class="field-row">
                 <span class="field-tag">{{ f }}</span>
                 <input
@@ -699,8 +933,19 @@ async function copyFromOtherProject() {
             </div>
           </div>
 
+          <!-- 示例数据展示 -->
+          <div class="ds-sample-section" v-if="ds.sample && ds.sample.length > 0">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <button class="btn-collapse" @click="toggleCardSample(ds.id)">
+                {{ cardSampleCollapsed[ds.id] ? '▶' : '▼' }}
+              </button>
+              <span class="fields-title" style="margin:0;">示例数据（前 {{ ds.sample.length }} 条）</span>
+            </div>
+            <pre v-show="!cardSampleCollapsed[ds.id]" class="sample-json-compact">{{ JSON.stringify(ds.sample, null, 2) }}</pre>
+          </div>
+
           <div class="ds-actions">
-            <button class="btn-sm" @click="useMockSource({ label: ds.name, url: ds.url })">重新探测</button>
+            <button class="btn-sm" @click="ds.type === 'api' ? editDataSource(ds) : editDbDataSource(ds)">重新探测</button>
             <button class="btn-sm danger" @click="removeDs(ds.id)">删除</button>
           </div>
         </div>
@@ -720,6 +965,92 @@ async function copyFromOtherProject() {
         </div>
       </div>
     </section>
+
+    <!-- 项目选择弹窗 -->
+    <div v-if="showProjectSelector" class="modal-overlay" @click="showProjectSelector = false">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h3>📥 从其他项目导入数据源</h3>
+          <button class="modal-close" @click="showProjectSelector = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <!-- 步骤1: 选择项目 -->
+          <div v-if="!selectedProjectId" class="step-section">
+            <div class="step-title">选择源项目</div>
+            <div class="project-list">
+              <div
+                v-for="proj in availableProjects"
+                :key="proj.id"
+                class="project-item"
+                @click="selectProject(proj.id)"
+              >
+                <div class="project-name">{{ proj.name }}</div>
+                <div class="project-info">{{ proj.dataSources?.length || 0 }} 个数据源</div>
+              </div>
+            </div>
+            <div v-if="availableProjects.length === 0" class="empty-state">
+              暂无其他项目
+            </div>
+          </div>
+
+          <!-- 步骤2: 选择数据源 -->
+          <div v-else class="step-section">
+            <div class="step-header">
+              <button class="btn-back" @click="selectedProjectId = ''">← 返回</button>
+              <div class="step-title">选择要导入的数据源</div>
+            </div>
+
+            <div class="select-all-row">
+              <label>
+                <input
+                  type="checkbox"
+                  :checked="selectedDataSources.length === availableDataSources.length && availableDataSources.length > 0"
+                  @change="toggleSelectAll"
+                />
+                全选 ({{ selectedDataSources.length }}/{{ availableDataSources.length }})
+              </label>
+            </div>
+
+            <div class="datasource-list">
+              <div
+                v-for="ds in availableDataSources"
+                :key="ds.id"
+                class="datasource-item"
+                @click="toggleDataSource(ds.id)"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedDataSources.includes(ds.id)"
+                  @click.stop="toggleDataSource(ds.id)"
+                />
+                <div class="datasource-info">
+                  <div class="datasource-name">{{ ds.name }}</div>
+                  <div class="datasource-meta">
+                    <span class="datasource-type">{{ ds.type === 'api' ? 'API' : '数据库' }}</span>
+                    <span class="datasource-fields">{{ ds.fields?.length || 0 }} 个字段</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="availableDataSources.length === 0" class="empty-state">
+              该项目暂无数据源
+            </div>
+
+            <div class="modal-footer">
+              <button class="btn-cancel" @click="showProjectSelector = false">取消</button>
+              <button
+                class="btn-confirm"
+                @click="confirmImport"
+                :disabled="selectedDataSources.length === 0"
+              >
+                导入 {{ selectedDataSources.length }} 个数据源
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -904,6 +1235,21 @@ async function copyFromOtherProject() {
   font-family: monospace;
 }
 
+.btn-collapse {
+  background: none;
+  border: none;
+  color: var(--text-color, #e0e6f0);
+  cursor: pointer;
+  padding: 4px;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.2s;
+}
+
+.btn-collapse:hover {
+  color: var(--primary-color, #4a9eff);
+}
+
 .fields-title {
   font-size: 12px;
   color: var(--text-muted, #4a5578);
@@ -941,6 +1287,36 @@ async function copyFromOtherProject() {
   overflow-x: auto;
   max-height: 200px;
   margin: 0;
+}
+
+.sample-json-compact {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-secondary, #8892b0);
+  overflow-x: auto;
+  max-height: 150px;
+  margin: 0;
+  border: 1px solid var(--border-color, #2a2d45);
+}
+
+.ds-sample-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color, #2a2d45);
+}
+
+.db-connection-section {
+  margin-bottom: 16px;
+}
+
+.custom-db-form {
+  margin-top: 12px;
+  padding: 16px;
+  background: rgba(123, 97, 255, 0.05);
+  border: 1px solid rgba(123, 97, 255, 0.2);
+  border-radius: 8px;
 }
 
 .probe-fail {
@@ -1195,29 +1571,41 @@ async function copyFromOtherProject() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
 .fields-table {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .fields-table.editing {
-  flex-direction: column;
-  gap: 4px;
+  /* 编辑模式保持相同样式 */
 }
 
 .field-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+
+.field-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-color, #2a2d45);
 }
 
 .field-annotation {
   font-size: 11px;
   color: var(--text-muted, #4a5578);
+  flex-shrink: 0;
 }
 
 .annotation-input {
@@ -1263,6 +1651,257 @@ async function copyFromOtherProject() {
 .hint {
   color: var(--text-muted, #4a5578);
   font-weight: normal;
+}
+
+/* 项目选择弹窗 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: var(--bg-primary, #0a0e1a);
+  border: 1px solid var(--border-color, #2a2d45);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 500px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px;
+  border-bottom: 1px solid var(--border-color, #2a2d45);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text-primary, #e0e6ff);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8892b0);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.modal-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary, #e0e6ff);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-item {
+  padding: 16px;
+  background: var(--bg-secondary, #131837);
+  border: 1px solid var(--border-color, #2a2d45);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.project-item:hover {
+  border-color: var(--accent, #00d4ff);
+  background: rgba(0, 212, 255, 0.05);
+}
+
+.project-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary, #e0e6ff);
+  margin-bottom: 4px;
+}
+
+.project-info {
+  font-size: 13px;
+  color: var(--text-secondary, #8892b0);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted, #4a5578);
+  font-size: 14px;
+}
+
+.step-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.step-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary, #8892b0);
+  margin-bottom: 12px;
+}
+
+.btn-back {
+  background: none;
+  border: 1px solid var(--border-color, #2a2d45);
+  color: var(--text-secondary, #8892b0);
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn-back:hover {
+  border-color: var(--accent, #00d4ff);
+  color: var(--accent, #00d4ff);
+}
+
+.select-all-row {
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #2a2d45);
+}
+
+.select-all-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-primary, #e0e6ff);
+}
+
+.datasource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.datasource-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg-secondary, #131837);
+  border: 1px solid var(--border-color, #2a2d45);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.datasource-item:hover {
+  border-color: var(--accent, #00d4ff);
+  background: rgba(0, 212, 255, 0.05);
+}
+
+.datasource-item input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.datasource-info {
+  flex: 1;
+}
+
+.datasource-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #e0e6ff);
+  margin-bottom: 4px;
+}
+
+.datasource-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary, #8892b0);
+}
+
+.datasource-type {
+  padding: 2px 6px;
+  background: rgba(0, 212, 255, 0.1);
+  color: var(--accent, #00d4ff);
+  border-radius: 3px;
+}
+
+.datasource-fields {
+  color: var(--text-muted, #4a5578);
+}
+
+.modal-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color, #2a2d45);
+  margin-top: 16px;
+}
+
+.btn-confirm {
+  padding: 8px 20px;
+  background: linear-gradient(135deg, #7b61ff, #00d4ff);
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-cancel {
+  padding: 8px 20px;
+  background: transparent;
+  border: 1px solid var(--border-color, #2a2d45);
+  border-radius: 6px;
+  color: var(--text-secondary, #8892b0);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-cancel:hover {
+  border-color: var(--accent, #00d4ff);
+  color: var(--accent, #00d4ff);
 }
 </style>
 

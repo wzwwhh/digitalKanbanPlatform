@@ -5,10 +5,12 @@
     </Transition>
   </router-view>
   <GlobalDialog />
+  <GlobalToast />
 </template>
 
 <script setup>
 import GlobalDialog from './components/GlobalDialog.vue'
+import GlobalToast from './components/GlobalToast.vue'
 </script>
 
 <style>

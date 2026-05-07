@@ -55,7 +55,7 @@ export const useProjectStore = defineStore('project', () => {
 
   function getDashboards(projectId) {
     const proj = projects.value.find(p => p.id === projectId)
-    return proj?.dashboards || []
+    return Array.isArray(proj?.dashboards) ? proj.dashboards : []
   }
 
   function createDashboard(projectId, name) {
@@ -70,7 +70,7 @@ export const useProjectStore = defineStore('project', () => {
       createdAt: new Date().toISOString(),
       savedAt: null,
     }
-    if (!proj.dashboards) proj.dashboards = []
+    if (!Array.isArray(proj.dashboards)) proj.dashboards = []
     proj.dashboards.push(dashboard)
     _persist()
     return dashboard
@@ -79,14 +79,18 @@ export const useProjectStore = defineStore('project', () => {
   function deleteDashboard(projectId, dashboardId) {
     const proj = projects.value.find(p => p.id === projectId)
     if (!proj) return
-    proj.dashboards = (proj.dashboards || []).filter(d => d.id !== dashboardId)
+    proj.dashboards = (Array.isArray(proj.dashboards) ? proj.dashboards : []).filter(
+      d => d.id !== dashboardId
+    )
     _persist()
   }
 
   function getDashboard(projectId, dashboardId) {
     const proj = projects.value.find(p => p.id === projectId)
     if (!proj) return null
-    return (proj.dashboards || []).find(d => d.id === dashboardId) || null
+    return (Array.isArray(proj.dashboards) ? proj.dashboards : []).find(
+      d => d.id === dashboardId
+    ) || null
   }
 
   function saveDashboard(projectId, dashboardId, widgets, boardTheme, bgImage) {
@@ -115,6 +119,7 @@ export const useProjectStore = defineStore('project', () => {
 
   function addDataSource(ds) {
     if (!currentProject.value) return null
+    if (!Array.isArray(currentProject.value.dataSources)) currentProject.value.dataSources = []
     const dataSource = { id: `ds_${nanoid(8)}`, ...ds }
     currentProject.value.dataSources.push(dataSource)
     _persist()
@@ -123,15 +128,16 @@ export const useProjectStore = defineStore('project', () => {
 
   function removeDataSource(dsId) {
     if (!currentProject.value) return
-    currentProject.value.dataSources = currentProject.value.dataSources.filter(
-      ds => ds.id !== dsId
-    )
+    currentProject.value.dataSources = (Array.isArray(currentProject.value.dataSources)
+      ? currentProject.value.dataSources
+      : []).filter(ds => ds.id !== dsId)
     _persist()
   }
 
   function updateDataSource(dsId, patch) {
     if (!currentProject.value) return
-    const ds = currentProject.value.dataSources.find(d => d.id === dsId)
+    const list = Array.isArray(currentProject.value.dataSources) ? currentProject.value.dataSources : []
+    const ds = list.find(d => d.id === dsId)
     if (ds) {
       Object.assign(ds, patch)
       _persist()
@@ -143,7 +149,8 @@ export const useProjectStore = defineStore('project', () => {
   function copyDataSources(fromProjectId) {
     if (!currentProject.value) return 0
     const fromProj = projects.value.find(p => p.id === fromProjectId)
-    if (!fromProj || !fromProj.dataSources) return 0
+    if (!fromProj || !Array.isArray(fromProj.dataSources)) return 0
+    if (!Array.isArray(currentProject.value.dataSources)) currentProject.value.dataSources = []
     
     let count = 0
     for (const ds of fromProj.dataSources) {
@@ -195,9 +202,9 @@ export const useProjectStore = defineStore('project', () => {
     persistence.save('projects', projects.value)
   }
 
-  function loadProjects() {
-    const data = persistence.load('projects', [])
-    projects.value = data.map(_normalize)
+  async function loadProjects() {
+    const data = await persistence.load('projects', [])
+    projects.value = Array.isArray(data) ? data.map(_normalize) : []
   }
 
   function _normalize(project) {

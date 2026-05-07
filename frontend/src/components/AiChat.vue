@@ -63,6 +63,7 @@ import { useProjectStore } from '../stores/project'
 import { useThemeStore } from '../stores/theme'
 import { useHistoryStore } from '../stores/history'
 import { executeCommand, createCommand, CommandType, undo, redo } from '../core/command'
+import { apiUrl } from '../config/api'
 
 const p = defineProps({
   initialPrompt: { type: String, default: '' },
@@ -191,7 +192,7 @@ async function sendMessage() {
     const controller = new AbortController()
     // AI 处理可能需要较长时间，将超时时间延长至 300 秒
     const timeout = setTimeout(() => controller.abort(new Error("AI 请求超时，请重试（复杂指令可能需要更长处理时间）")), 300000)
-    const response = await fetch('/api/ai/chat', {
+    const response = await fetch(apiUrl('/ai/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, context }),

@@ -1,0 +1,75 @@
+# Nginx 配置示例 - 生产环境部署
+# 适用于将前端静态文件和后端API部署到服务器的场景
+
+# 假设:
+# - 前端构建后的静态文件位于: /data/run/digitalKanbanPlatform/frontend/dist/
+# - 后端运行在: http://127.0.0.1:8000
+# - 访问路径前缀: /kanban
+
+server {
+    listen 5175;
+    server_name localhost;
+
+    # --- 后端 API 代理 (必须放在 /kanban/ 前面，优先匹配) ---
+    location /kanban/api/ {
+        # 后端现在有 /kanban 前缀，直接转发
+        proxy_pass http://127.0.0.1:8000/kanban/api/;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # AI接口可能需要较长时间
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+
+    # --- 前端静态资源配置 ---
+    location /kanban/ {
+        # 注意: alias 指向的路径，最后必须有斜杠 /
+        alias /data/run/digitalKanbanPlatform/frontend/dist/;
+
+        # 关键: 处理单页应用的路由刷新 404 问题
+        # 如果找不到文件，就返回 index.html
+        # 注意: 不要加 $uri/，否则 /kanban/api/ 会被当作目录处理
+        try_files $uri /kanban/index.html;
+    }
+
+}
+
+# ========== 说明 ==========
+#
+# 1. 前端路径处理:
+#    - 用户访问: http://10.156.195.35:5175/kanban/
+#    - nginx 映射到: /data/run/digitalKanbanPlatform/frontend/dist/index.html
+#    - try_files 确保 Vue Router 的路由刷新不会 404
+#
+# 2. API路径处理:
+#    - 用户访问: http://10.156.195.35:5175/kanban/api/health
+#    - nginx 转发到: http://127.0.0.1:8000/kanban/api/health (保留 /kanban 前缀)
+#    - 后端收到: /kanban/api/health
+#
+# 3. 前端构建配置:
+#    - 需要在 vite.config.js 中设置 base: '/kanban/'
+#    - 这样打包后的资源路径才是 /kanban/assets/xxx
+#
+# 4. 后端配置:
+#    - 需要设置 API_PREFIX=/kanban 环境变量
+#    - 后端监听 /api/* 路由，但通过 root_path 支持 /kanban 前缀
+#
+# 5. 常见错误:
+#    - ❌ proxy_pass http://127.0.0.1:8000/api/  (后端现在有 /kanban 前缀)
+#    - ✅ proxy_pass http://127.0.0.1:8000/kanban/api/
+#
+# 6. location 顺序至关重要:
+#    - /kanban/api/ 必须放在 /kanban/ 之前
+#    - try_files 不要加 $uri/，否则 /kanban/api/ 会被当作目录处理
+#
+# 7. 测试方法:
+#    - 测试前端: curl http://10.156.195.35:5175/kanban/
+#    - 测试API: curl http://10.156.195.35:5175/kanban/api/health
+#    - 应该返回 {"status":"ok","version":"0.1.0"}
+

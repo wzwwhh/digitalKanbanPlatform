@@ -3,6 +3,7 @@
  *
  * 用于组件级数据绑定：widget.dataSource → fetchDataSource() → 真实数据
  */
+import { apiUrl } from '../config/api'
 
 /**
  * 根据组件的 dataSource 配置获取真实数据
@@ -101,7 +102,7 @@ async function fetchDatabaseData(config, dataSource) {
       || config.sql
       || `SELECT * FROM ${config.table} LIMIT 200`
 
-    const resp = await fetch('/api/data/db/query', {
+    const resp = await fetch(apiUrl('/data/db/query'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sql }),

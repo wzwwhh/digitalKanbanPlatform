@@ -14,6 +14,7 @@ import { ref, reactive, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '../stores/project'
 import AskChatMessage from '../components/AskChatMessage.vue'
+import { apiUrl } from '../config/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -138,7 +139,7 @@ async function askQuestion() {
       projectId: projectId.value,
     })
 
-    const resp = await fetch('/api/ai/ask', {
+    const resp = await fetch(apiUrl('/ai/ask'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,

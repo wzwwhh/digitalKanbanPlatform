@@ -18,7 +18,7 @@ DEFAULT_DB_PATH = os.path.join(
 
 
 def _get_conn(db_path: Optional[str] = None, db_type: str = "sqlite", **kwargs):
-    """获取数据库连接（SQLite 或 MySQL）"""
+    """获取数据库连接（SQLite、MySQL 或 PostgreSQL）"""
     if db_type == "mysql":
         try:
             import pymysql
@@ -32,6 +32,20 @@ def _get_conn(db_path: Optional[str] = None, db_type: str = "sqlite", **kwargs):
             database=kwargs.get("database", ""),
             charset="utf8mb4",
             cursorclass=pymysql.cursors.DictCursor,
+        )
+        return conn
+    elif db_type == "postgresql":
+        try:
+            import psycopg2
+            import psycopg2.extras
+        except ImportError:
+            raise RuntimeError("PostgreSQL 支持需要安装 psycopg2: pip install psycopg2-binary")
+        conn = psycopg2.connect(
+            host=kwargs.get("host", "localhost"),
+            port=int(kwargs.get("port", 5432)),
+            user=kwargs.get("user", "postgres"),
+            password=kwargs.get("password", ""),
+            database=kwargs.get("database", ""),
         )
         return conn
     else:
@@ -51,6 +65,12 @@ def list_tables(db_path: Optional[str] = None, db_type: str = "sqlite", **kwargs
             with conn.cursor() as cur:
                 cur.execute("SHOW TABLES")
                 return [list(row.values())[0] for row in cur.fetchall()]
+        elif db_type == "postgresql":
+            cur = conn.cursor()
+            cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename")
+            tables = [row[0] for row in cur.fetchall()]
+            cur.close()
+            return tables
         else:
             cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             return [row["name"] for row in cur.fetchall()]
@@ -65,8 +85,15 @@ def probe_table(table_name: str, db_path: Optional[str] = None, db_type: str = "
         comments = {}
         if db_type == "mysql":
             with conn.cursor() as cur:
+                # 先检查表是否存在
+                cur.execute("SHOW TABLES LIKE %s", (table_name,))
+                if not cur.fetchone():
+                    raise ValueError(f"表 '{table_name}' 不存在")
+
                 cur.execute(f"DESCRIBE `{table_name}`")
                 cols = cur.fetchall()
+                if not cols:
+                    raise ValueError(f"无法获取表 '{table_name}' 的结构")
                 fields = [{"name": c["Field"], "type": c["Type"]} for c in cols]
                 cur.execute(f"SELECT COUNT(*) as cnt FROM `{table_name}`")
                 row_count = cur.fetchone()["cnt"]
@@ -83,6 +110,29 @@ def probe_table(table_name: str, db_path: Optional[str] = None, db_type: str = "
                     for row in cur.fetchall():
                         if row.get("COLUMN_COMMENT"):
                             comments[row["COLUMN_NAME"]] = row["COLUMN_COMMENT"]
+        elif db_type == "postgresql":
+            import psycopg2.extras
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s ORDER BY ordinal_position", (table_name,))
+            cols = cur.fetchall()
+            if not cols:
+                raise ValueError(f"表 '{table_name}' 不存在")
+            fields = [{"name": col["column_name"], "type": col["data_type"]} for col in cols]
+            cur.execute(f"SELECT COUNT(*) as cnt FROM {table_name}")
+            row_count = cur.fetchone()["cnt"]
+            cur.execute(f"SELECT * FROM {table_name} LIMIT 5")
+            sample = [dict(row) for row in cur.fetchall()]
+            # 读取字段注释
+            cur.execute(
+                "SELECT a.attname, d.description FROM pg_attribute a "
+                "LEFT JOIN pg_description d ON d.objoid = a.attrelid AND d.objsubid = a.attnum "
+                "WHERE a.attrelid = %s::regclass AND a.attnum > 0",
+                (table_name,)
+            )
+            for row in cur.fetchall():
+                if row.get("description"):
+                    comments[row["attname"]] = row["description"]
+            cur.close()
         else:
             cur = conn.execute(f"PRAGMA table_info({table_name})")
             columns = cur.fetchall()
@@ -99,7 +149,7 @@ def probe_table(table_name: str, db_path: Optional[str] = None, db_type: str = "
         conn.close()
 
 
-def query_sql(sql: str, db_path: Optional[str] = None, limit: int = 1000) -> dict:
+def query_sql(sql: str, db_path: Optional[str] = None, limit: int = 1000, db_type: str = "sqlite", **kwargs) -> dict:
     """
     执行 SQL 查询
 
@@ -128,20 +178,35 @@ def query_sql(sql: str, db_path: Optional[str] = None, limit: int = 1000) -> dic
     if "LIMIT" not in stripped:
         sql = f"{sql.rstrip().rstrip(';')} LIMIT {limit}"
 
-    conn = _get_conn(db_path)
+    conn = _get_conn(db_path, db_type, **kwargs)
     try:
-        cur = conn.execute(sql)
-        rows = cur.fetchall()
-        if not rows:
-            return {"fields": [], "data": [], "rowCount": 0}
-
-        fields = [desc[0] for desc in cur.description]
-        data = [dict(row) for row in rows]
-
-        return {
-            "fields": fields,
-            "data": data,
-            "rowCount": len(data),
-        }
+        if db_type == "mysql":
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+                if not rows:
+                    return {"fields": [], "data": [], "rowCount": 0}
+                fields = list(rows[0].keys()) if rows else []
+                data = [dict(row) for row in rows]
+                return {"fields": fields, "data": data, "rowCount": len(data)}
+        elif db_type == "postgresql":
+            import psycopg2.extras
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(sql)
+            rows = cur.fetchall()
+            cur.close()
+            if not rows:
+                return {"fields": [], "data": [], "rowCount": 0}
+            fields = list(rows[0].keys()) if rows else []
+            data = [dict(row) for row in rows]
+            return {"fields": fields, "data": data, "rowCount": len(data)}
+        else:
+            cur = conn.execute(sql)
+            rows = cur.fetchall()
+            if not rows:
+                return {"fields": [], "data": [], "rowCount": 0}
+            fields = [desc[0] for desc in cur.description]
+            data = [dict(row) for row in rows]
+            return {"fields": fields, "data": data, "rowCount": len(data)}
     finally:
         conn.close()

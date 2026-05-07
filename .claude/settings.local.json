@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pip list)",
+      "Bash(curl -s http://localhost:8000/api/data/probe -X POST -H \"Content-Type: application/json\" -d '{\"url\":\"http://example.com\",\"method\":\"GET\"}')",
+      "Bash(python -c \"from app.main import app; print\\('✅ 后端导入成功'\\)\")",
+      "Bash(python -c \"import httpx; import asyncio; async def test\\(\\): async with httpx.AsyncClient\\(\\) as client: resp = await client.get\\('http://127.0.0.1:8000/api/mock/sales'\\); print\\(f'Status: {resp.status_code}'\\); print\\(f'Content-Type: {resp.headers.get\\(\\\\\"content-type\\\\\"\\)}'\\); print\\(f'Body preview: {resp.text[:200]}'\\); asyncio.run\\(test\\(\\)\\)\")",
+      "Bash(curl -s http://127.0.0.1:8000/api/mock/sales)",
+      "Bash(curl -s -I http://127.0.0.1:8000/api/mock/sales)",
+      "Bash(netstat -ano)",
+      "Bash(python -c \"from app.main import app; print\\('Backend import OK'\\)\")"
+    ]
+  }
+}

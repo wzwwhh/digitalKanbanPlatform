@@ -4,6 +4,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { getAllThemes, registerTheme } from '../core/registry'
+import registries from '../core/registry'
 import { persistence } from '../services/persistence'
 import emitter, { Events } from '../core/event-bus'
 
@@ -64,8 +65,8 @@ export const useThemeStore = defineStore('theme', () => {
   /**
    * 初始化主题（含自定义主题加载）
    */
-  function initTheme() {
-    loadCustomThemes()
+  async function initTheme() {
+    await loadCustomThemes()
     applyTheme(currentTheme.value)
   }
 
@@ -94,6 +95,8 @@ export const useThemeStore = defineStore('theme', () => {
   function deleteCustomTheme(themeId) {
     customThemes.value = customThemes.value.filter(t => t.id !== themeId)
     _persistCustomThemes()
+    // 从 registry 中删除主题
+    delete registries.themes[themeId]
     _themeVersion.value++  // 触发 allThemes 重新计算
     if (currentTheme.value === themeId) {
       applyTheme('dark-tech')
@@ -103,10 +106,20 @@ export const useThemeStore = defineStore('theme', () => {
   /**
    * 从 localStorage 加载自定义主题并注册
    */
-  function loadCustomThemes() {
-    const data = persistence.load('custom_themes', [])
-    customThemes.value = data
-    data.forEach(t => {
+  async function loadCustomThemes() {
+    // api 模式下 custom_themes 目前不走后端，直接回退为空，避免错误请求 HTML 页面
+    if (persistence?.constructor?.name === 'Object' && typeof persistence.load === 'function' && (typeof import.meta !== 'undefined')) {
+      if (import.meta.env.VITE_STORAGE_MODE === 'api') {
+        customThemes.value = []
+        _themeVersion.value++
+        return
+      }
+    }
+
+    const data = await persistence.load('custom_themes', [])
+    const themes = Array.isArray(data) ? data : []
+    customThemes.value = themes
+    themes.forEach(t => {
       registerTheme(t.id, { label: t.label, vars: t.vars })
     })
     _themeVersion.value++

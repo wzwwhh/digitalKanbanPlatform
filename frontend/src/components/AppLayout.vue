@@ -118,11 +118,6 @@
     <!-- 数据源抽屉组件 -->
     <DataSourceDrawer v-model:visible="showDsDrawer" />
 
-    <!-- 全局 Toast -->
-    <Transition name="toast">
-      <div v-if="toastMsg" class="float-toast" :class="toastType">{{ toastMsg }}</div>
-    </Transition>
-
     <!-- 快捷键帮助 -->
     <ShortcutsHelp :visible="showShortcuts" @close="showShortcuts = false" />
 
@@ -172,6 +167,8 @@ import ThemePicker from './ThemePicker.vue'
 import ShortcutsHelp from './ShortcutsHelp.vue'
 import DataSourceDrawer from './DataSourceDrawer.vue'
 import { useCustomTemplatesStore } from '../stores/customTemplates'
+import { useToast } from '../composables/useToast'
+import { apiUrl } from '../config/api'
 
 const props = defineProps({
   projectId: { type: String, default: '' },
@@ -185,6 +182,7 @@ const dashboardStore = useDashboardStore()
 const historyStore = useHistoryStore()
 const themeStore = useThemeStore()
 const customTemplatesStore = useCustomTemplatesStore()
+const toast = useToast()
 
 const rightTab = ref('ai')
 const matSearch = ref('')
@@ -375,16 +373,6 @@ function handleUndo() { undo() }
 function handleRedo() { redo() }
 
 const saveMsg = ref('')
-const toastMsg = ref('')
-const toastType = ref('success')
-let toastTimer = null
-
-function showToast(msg, type = 'success', duration = 2000) {
-  if (toastTimer) clearTimeout(toastTimer)
-  toastMsg.value = msg
-  toastType.value = type
-  toastTimer = setTimeout(() => { toastMsg.value = '' }, duration)
-}
 
 function handleSave() {
   if (props.projectId && props.dashboardId) {
@@ -394,7 +382,7 @@ function handleSave() {
   }
   saveMsg.value = '✅ 已保存'
   setTimeout(() => saveMsg.value = '', 2000)
-  showToast('✅ 保存成功')
+  toast.success('✅ 保存成功')
 }
 
 function handleExport() {
@@ -417,7 +405,7 @@ async function confirmExport(type) {
 
   try {
     if (useZip) {
-      const response = await fetch('/api/export/zip', {
+      const response = await fetch(apiUrl('/export/zip'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -434,9 +422,9 @@ async function confirmExport(type) {
       a.download = data.filename || 'dashboard.zip'
       a.click()
       URL.revokeObjectURL(url)
-      showToast('📦 ZIP 部署包导出成功')
+      toast.success('📦 ZIP 部署包导出成功')
     } else {
-      const response = await fetch('/api/export/html', {
+      const response = await fetch(apiUrl('/export/html'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -449,10 +437,10 @@ async function confirmExport(type) {
       a.download = data.filename || `${dashboardName.value || 'dashboard'}.html`
       a.click()
       URL.revokeObjectURL(url)
-      showToast('📦 HTML 导出成功')
+      toast.success('📦 HTML 导出成功')
     }
   } catch (err) {
-    showToast(`导出失败: ${err.message}`, 'error', 4000)
+    toast.error(`导出失败: ${err.message}`, 4000)
   }
 }
 
@@ -533,7 +521,7 @@ async function handleAutoLayout(mode = 'ai') {
     const controller = new AbortController()
     const timeoutMs = mode === 'fast' ? 10000 : 300000
     const timeout = setTimeout(() => controller.abort(new Error("AI 排版超时，请重试或使用快速排版")), timeoutMs)
-    const response = await fetch('/api/ai/chat', {
+    const response = await fetch(apiUrl('/ai/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: '排版', context }),
@@ -549,12 +537,12 @@ async function handleAutoLayout(mode = 'ai') {
       for (const cmd of data.commands) {
         applyLayoutCommand(cmd)
       }
-      showToast(mode === 'fast' ? '⚡ 快速排版完成' : '✨ AI排版完成')
+      toast.success(mode === 'fast' ? '⚡ 快速排版完成' : '✨ AI排版完成')
     } else {
-      showToast(data.message || '排版未产生变更', 'error', 3000)
+      toast.error(data.message || '排版未产生变更', 3000)
     }
   } catch (err) {
-    showToast(`排版失败: ${err.message}`, 'error', 4000)
+    toast.error(`排版失败: ${err.message}`, 4000)
   } finally {
     layoutLoading.value = ''
   }

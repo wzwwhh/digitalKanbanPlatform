@@ -162,7 +162,7 @@
             <label class="field-label">{{ mf.label }}</label>
             <select class="field-input" :value="currentMapping[mf.key] || ''" @change="updateMappingField(mf.key, $event.target.value)">
               <option value="">-- 选择字段 --</option>
-              <option v-for="f in boundDataSource.fields" :key="f" :value="f">{{ f }}</option>
+              <option v-for="f in (boundDataSource?.fields || [])" :key="f" :value="f">{{ f }}</option>
             </select>
           </div>
         </template>
@@ -212,6 +212,7 @@ import { executeCommand, createCommand, CommandType } from '../core/command'
 import { getWidget } from '../core/registry'
 import { useDialog } from '../composables/useDialog'
 import ThemePicker from './ThemePicker.vue'
+import { apiUrl } from '../config/api'
 
 const dashboardStore = useDashboardStore()
 const projectStore = useProjectStore()
@@ -335,7 +336,7 @@ async function autoInferSql(sourceId) {
 
   inferring.value = true
   try {
-    const resp = await fetch('/api/ai/infer-sql', {
+    const resp = await fetch(apiUrl('/ai/infer-sql'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -357,6 +358,14 @@ async function autoInferSql(sourceId) {
         id: widget.value.id,
         dataSource: newDataSource,
       }))
+
+      // 【关键修复】如果返回了 fields，更新数据源的字段列表
+      if (result.fields && result.fields.length > 0) {
+        const projectStore = useProjectStore()
+        projectStore.updateDataSource(sourceId, { fields: result.fields })
+        console.log('[PropEditor] 更新数据源字段列表:', result.fields)
+      }
+
       // 如果 AI 推荐了标题且当前没有自定义标题
       if (result.title && !widget.value.props?.title) {
         executeCommand(createCommand(CommandType.UPDATE_WIDGET, {

@@ -654,10 +654,10 @@ def generate_readme(request):
             # 数据库类型
             db_type = ds.get("dbType", "sqlite")
             lines.append(f"- **数据库类型**: {db_type.upper()}")
-            if db_type == "mysql":
-                lines.append(f"- **主机**: `{ds.get('host', 'localhost')}:{ds.get('port', 3306)}`")
+            if db_type in ("mysql", "postgresql"):
+                lines.append(f"- **主机**: `{ds.get('host', 'localhost')}:{ds.get('port', 3306 if db_type == 'mysql' else 5432)}`")
                 lines.append(f"- **数据库**: `{ds.get('database', '')}`")
-                lines.append(f"- **用户**: `{ds.get('user', 'root')}`")
+                lines.append(f"- **用户**: `{ds.get('user', 'root' if db_type == 'mysql' else 'postgres')}`")
             else:
                 lines.append(f"- **数据库文件**: `{ds.get('dbPath', 'sample_data.db')}`")
             lines.append(f"- **表**: `{ds.get('table', '')}`")
@@ -690,6 +690,23 @@ def generate_readme(request):
                 lines.append(f"    cursorclass=pymysql.cursors.DictCursor")
                 lines.append(f")")
                 lines.append(f'cursor = conn.cursor()')
+                sql = ds.get("sql", f"SELECT * FROM {ds.get('table', '?')} LIMIT 10")
+                lines.append(f'cursor.execute("{sql}")')
+                lines.append(f'rows = cursor.fetchall()')
+                lines.append("```")
+            elif db_type == "postgresql":
+                lines.append("#### 连接示例 (Python)")
+                lines.append("```python")
+                lines.append("import psycopg2")
+                lines.append("import psycopg2.extras")
+                lines.append(f"conn = psycopg2.connect(")
+                lines.append(f"    host='{ds.get('host', 'localhost')}',")
+                lines.append(f"    port={ds.get('port', 5432)},")
+                lines.append(f"    user='{ds.get('user', 'postgres')}',")
+                lines.append(f"    password='YOUR_PASSWORD',  # TODO: 填入真实密码")
+                lines.append(f"    database='{ds.get('database', '')}'")
+                lines.append(f")")
+                lines.append(f'cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)')
                 sql = ds.get("sql", f"SELECT * FROM {ds.get('table', '?')} LIMIT 10")
                 lines.append(f'cursor.execute("{sql}")')
                 lines.append(f'rows = cursor.fetchall()')
@@ -767,7 +784,7 @@ async def data_{safe_name}():
         db_type = ds.get("dbType", "sqlite")
         table = ds.get("table", "")
         sql = ds.get("sql", f"SELECT * FROM {table}")
-        
+
         if db_type == "mysql":
             route_blocks.append(f'''
 @app.get("/api/data/{safe_name}")
@@ -787,6 +804,30 @@ async def data_{safe_name}():
         with conn.cursor() as cur:
             cur.execute("""{sql}""")
             rows = cur.fetchall()
+        conn.close()
+        return {{"data": rows, "total": len(rows)}}
+    except Exception as e:
+        return {{"error": str(e)}}
+''')
+        elif db_type == "postgresql":
+            route_blocks.append(f'''
+@app.get("/api/data/{safe_name}")
+async def data_{safe_name}():
+    """数据库查询: {ds.get('name', '')} → {table}"""
+    import psycopg2
+    import psycopg2.extras
+    try:
+        conn = psycopg2.connect(
+            host="{ds.get('host', 'localhost')}",
+            port={ds.get('port', 5432)},
+            user="{ds.get('user', 'postgres')}",
+            password=DB_PASSWORDS.get("{ds_id}", "YOUR_PASSWORD"),
+            database="{ds.get('database', '')}",
+        )
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""{sql}""")
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
         return {{"data": rows, "total": len(rows)}}
     except Exception as e:
@@ -814,7 +855,7 @@ async def data_{safe_name}():
     # 密码占位
     db_passwords = {}
     for ds in db_sources:
-        if ds.get("dbType") == "mysql":
+        if ds.get("dbType") in ("mysql", "postgresql"):
             db_passwords[ds.get("id", "")] = "YOUR_PASSWORD"
     passwords_code = json.dumps(db_passwords, ensure_ascii=False, indent=4)
 
@@ -902,13 +943,16 @@ async def export_zip(request: ExportRequest):
     
     # requirements.txt
     has_mysql = any(d.get("dbType") == "mysql" for d in (request.dataSources or []) if d.get("type") == "database")
+    has_postgresql = any(d.get("dbType") == "postgresql" for d in (request.dataSources or []) if d.get("type") == "database")
     has_api_proxy = any(d.get("type") != "database" for d in (request.dataSources or []))
-    
+
     deps = ["fastapi>=0.100.0", "uvicorn>=0.20.0"]
     if has_api_proxy:
         deps.append("httpx>=0.24.0")
     if has_mysql:
         deps.append("pymysql>=1.1.0")
+    if has_postgresql:
+        deps.append("psycopg2-binary>=2.9.0")
     requirements = "\n".join(deps) + "\n"
 
     buf = io.BytesIO()

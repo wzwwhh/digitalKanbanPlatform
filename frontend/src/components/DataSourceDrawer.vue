@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useProjectStore } from '../stores/project'
 import { useDialog } from '../composables/useDialog'
 import { useRouter, useRoute } from 'vue-router'
+import { apiUrl } from '../config/api'
 
 const props = defineProps({
   visible: { type: Boolean, default: false }
@@ -50,10 +51,22 @@ async function probeApi() {
   probing.value = true
   probeResult.value = null
   try {
-    const resp = await fetch('/api/data/probe', {
+    // 解析自定义请求头
+    let customHeaders = null
+    if (form.value.headers && form.value.headers.trim()) {
+      try {
+        customHeaders = JSON.parse(form.value.headers)
+      } catch (e) {
+        probeResult.value = { status: -1, fields: [], sample: [], structure: `请求头 JSON 格式错误: ${e.message}` }
+        probing.value = false
+        return
+      }
+    }
+
+    const resp = await fetch(apiUrl('/data/probe'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: form.value.url, method: form.value.method }),
+      body: JSON.stringify({ url: form.value.url, method: form.value.method, headers: customHeaders }),
     })
     probeResult.value = await resp.json()
   } catch (err) {
@@ -71,12 +84,33 @@ function saveApiDataSource() {
     if (match) autoPath = match[1]
   }
 
+  // 解析 headers 和 body
+  let headers = null
+  let body = null
+  if (form.value.headers && form.value.headers.trim()) {
+    try {
+      headers = JSON.parse(form.value.headers)
+    } catch (e) {
+      // 忽略格式错误，不保存
+    }
+  }
+  if (form.value.body && form.value.body.trim()) {
+    try {
+      body = JSON.parse(form.value.body)
+    } catch (e) {
+      // 忽略格式错误，不保存
+    }
+  }
+
   projectStore.addDataSource({
     name: form.value.name.trim(),
     type: 'api',
     url: form.value.url,
     method: form.value.method,
     dataPath: autoPath,
+    headers: headers,
+    body: body,
+    description: form.value.description || '',
     fields: probeResult.value?.fields || [],
     sample: probeResult.value?.sample?.slice(0, 3) || [],
     structure: probeResult.value?.structure || '',
@@ -84,14 +118,14 @@ function saveApiDataSource() {
   })
 
   showForm.value = false
-  form.value = { name: '', url: '', method: 'GET', dataPath: '' }
+  form.value = { name: '', url: '', method: 'GET', dataPath: '', headers: '', body: '', description: '' }
   probeResult.value = null
 }
 
 // 数据库相关
 async function loadDbTables() {
   try {
-    const resp = await fetch('/api/data/db/tables')
+    const resp = await fetch(apiUrl('/data/db/tables'))
     const data = await resp.json()
     if (data.success) {
       dbTables.value = data.tables.filter(t => t !== 'sqlite_sequence')
@@ -106,7 +140,7 @@ async function probeDbTable() {
   dbProbing.value = true
   dbProbeResult.value = null
   try {
-    const resp = await fetch('/api/data/db/probe', {
+    const resp = await fetch(apiUrl('/data/db/probe'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ table: dbForm.value.table }),
@@ -181,7 +215,7 @@ function cancelForm() {
 async function aiInferFields(fields, sample) {
   inferring.value = true
   try {
-    const resp = await fetch('/api/data/infer-fields', {
+    const resp = await fetch(apiUrl('/data/infer-fields'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields, sample: sample?.slice(0, 3) || [] }),
@@ -209,7 +243,7 @@ async function loadMockCatalog() {
   }
   mockLoading.value = true
   try {
-    const resp = await fetch('/api/mock/catalog')
+    const resp = await fetch(apiUrl('/mock/catalog'))
     mockCatalog.value = await resp.json()
   } catch (e) {
     console.error('加载 Mock 目录失败', e)

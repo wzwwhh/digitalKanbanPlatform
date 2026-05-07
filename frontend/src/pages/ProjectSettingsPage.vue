@@ -55,7 +55,10 @@ const customText = ref('#eaeaea')
 
 function saveCustom() {
   const name = customName.value.trim()
-  if (!name) return
+  if (!name) {
+    alert('⚠️ 请输入主题名称')
+    return
+  }
   const vars = {
     '--bg-primary': customBg.value,
     '--bg-secondary': adjustBrightness(customBg.value, 10),
@@ -75,8 +78,8 @@ function saveCustom() {
     '--shadow-glow': `0 0 20px ${customAccent.value}18`,
     '--font-family': "'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif",
   }
-  const id = themeStore.saveCustomTheme(name, vars)
-  themeStore.applyTheme(id)
+  themeStore.saveCustomTheme(name, vars)
+  // 不自动应用，让用户手动点击主题卡片应用
   showCustomForm.value = false
   customName.value = ''
 }
@@ -180,7 +183,7 @@ async function handleDeleteProject() {
             <span>Aa 文字</span>
           </div>
           <div class="custom-actions">
-            <button class="btn-save" @click="saveCustom" :disabled="!customName.trim()">保存并应用</button>
+            <button class="btn-save" @click="saveCustom">💾 保存</button>
             <button class="btn-cancel" @click="showCustomForm = false">取消</button>
           </div>
         </div>

@@ -16,6 +16,6 @@ app.use(router)
 // 初始化主题（必须在 pinia 挂载后）
 import { useThemeStore } from './stores/theme'
 const themeStore = useThemeStore()
-themeStore.initTheme()
+await themeStore.initTheme()
 
 app.mount('#app')

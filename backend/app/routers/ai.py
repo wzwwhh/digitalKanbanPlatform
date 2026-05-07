@@ -870,15 +870,49 @@ mapping 格式：
             {"role": "system", "content": "你是SQL推断专家，只返回紧凑JSON。"},
             {"role": "user", "content": prompt}
         ])
-        # 确保返回格式
+
+        # 如果是数据库类型且生成了SQL，执行LIMIT 1获取实际字段列表
+        inferred_sql = result.get("sql", "")
+        fields = ds.get("fields", [])  # 默认使用原字段
+
+        if ds_type == "database" and inferred_sql:
+            try:
+                # 构造LIMIT 1查询获取字段
+                test_sql = inferred_sql.replace("LIMIT", "-- LIMIT") + " LIMIT 1"
+
+                # 导入db_connector执行查询
+                from app.services.db_connector import query_sql
+
+                # 准备数据库连接参数
+                db_config = ds.get("dbConfig", {})
+                query_result = await query_sql(
+                    test_sql,
+                    db_type=db_config.get("dbType", "sqlite"),
+                    db_path=db_config.get("path"),
+                    host=db_config.get("host"),
+                    port=db_config.get("port"),
+                    user=db_config.get("user"),
+                    password=db_config.get("password"),
+                    database=db_config.get("database")
+                )
+
+                # 从查询结果中提取字段名
+                if query_result and len(query_result) > 0:
+                    fields = list(query_result[0].keys())
+                    print(f"[SQL推断] 从查询结果提取字段: {fields}")
+            except Exception as e:
+                print(f"[SQL推断] 获取字段列表失败: {e}，使用原字段")
+
+        # 确保返回格式（包含fields）
         return {
-            "sql": result.get("sql", ""),
+            "sql": inferred_sql,
             "mapping": result.get("mapping", {}),
             "title": result.get("title", ""),
+            "fields": fields,  # 新增：返回实际字段列表
         }
     except Exception as e:
         print(f"[SQL推断] 失败: {e}")
-        return {"sql": "", "mapping": {}, "title": ""}
+        return {"sql": "", "mapping": {}, "title": "", "fields": ds.get("fields", [])}
 
 
 async def generate_query_plan(question: str, ds_metadata: str) -> dict:

@@ -39,7 +39,28 @@ async def probe_api(url: str, method: str = "GET", headers: Optional[dict] = Non
                     "structure": f"HTTP {status}"
                 }
 
-            data = response.json()
+            # 检查响应是否为JSON
+            content_type = response.headers.get('content-type', '')
+            if 'application/json' not in content_type:
+                preview = response.text[:200]
+                return {
+                    "status": status,
+                    "fields": [],
+                    "sample": [],
+                    "structure": f"响应不是JSON格式 (Content-Type: {content_type}), 内容预览: {preview}"
+                }
+
+            try:
+                data = response.json()
+            except Exception as json_err:
+                preview = response.text[:200]
+                return {
+                    "status": status,
+                    "fields": [],
+                    "sample": [],
+                    "structure": f"JSON解析失败: {str(json_err)}, 内容预览: {preview}"
+                }
+
             fields, sample, structure = analyze_json(data)
 
             return {
